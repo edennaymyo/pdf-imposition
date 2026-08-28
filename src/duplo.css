@@ -18,6 +18,7 @@
 .canvas-wrap .sheet-name,.canvas-wrap .sheet-foot{display:none}
 
 .rotation{display:flex;gap:4px}.rotation button{border:1px solid #dce1e5;background:#fff;border-radius:5px;padding:6px 8px;font:600 10px Manrope}.rotation button.selected{border-color:#2f6ee9;background:#edf4ff;color:#2f6ee9}
+.rotation-pattern{margin-top:10px}
 
 .proof-sheet{padding:0!important;overflow:hidden;background:#fff}.proof-image{display:block;width:100%;height:100%;object-fit:fill}.proof-empty{width:100%;height:100%;display:grid;place-items:center;padding:32px;color:#7b8792;text-align:center;font:500 11px Manrope,sans-serif}.export:disabled{cursor:not-allowed;opacity:.55}
 

@@ -30,6 +30,13 @@ const STORAGE_STORE_NAME = 'handles';
 const BARCODE_DIRECTORY_KEY = 'barcode-directory';
 const PRESET_STORAGE_KEY = 'duplo-imposition-presets-v1';
 
+const ROTATION_PATTERNS = [
+  { value: 'same', label: 'Same rotation' },
+  { value: 'alternateRows', label: 'Alternate rows 180°' },
+  { value: 'alternateColumns', label: 'Alternate columns 180°' },
+  { value: 'checkerboard', label: 'Checkerboard 180°' },
+];
+
 const SAMPLE_COLORS = ['#d95d39', '#3460d8', '#edbd37', '#5c9f70', '#a8568b', '#2b9090'];
 
 const numberValue = value => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
@@ -134,6 +141,33 @@ function outputBleedAvailability(meta, rotation) {
   const output = { top: 0, bottom: 0, left: 0, right: 0 };
   for (const sourceSide of Object.keys(mapping)) output[mapping[sourceSide]] = meta[sourceSide];
   return output;
+}
+
+function cellRotation(baseRotation, rotationPattern, row, col) {
+  const flip = rotationPattern === 'alternateRows'
+    ? row % 2 === 1
+    : rotationPattern === 'alternateColumns'
+      ? col % 2 === 1
+      : rotationPattern === 'checkerboard'
+        ? (row + col) % 2 === 1
+        : false;
+  return (baseRotation + (flip ? 180 : 0)) % 360;
+}
+
+function calculateOuterBleed(meta, baseRotation, rotationPattern, rows, cols) {
+  if (!meta) return { top: OUTER_BLEED_MM, bottom: OUTER_BLEED_MM, left: OUTER_BLEED_MM, right: OUTER_BLEED_MM };
+  const outer = { top: OUTER_BLEED_MM, bottom: OUTER_BLEED_MM, left: OUTER_BLEED_MM, right: OUTER_BLEED_MM };
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      if (row !== 0 && row !== rows - 1 && col !== 0 && col !== cols - 1) continue;
+      const availability = outputBleedAvailability(meta, cellRotation(baseRotation, rotationPattern, row, col));
+      if (row === 0) outer.top = Math.min(outer.top, availability.top);
+      if (row === rows - 1) outer.bottom = Math.min(outer.bottom, availability.bottom);
+      if (col === 0) outer.left = Math.min(outer.left, availability.left);
+      if (col === cols - 1) outer.right = Math.min(outer.right, availability.right);
+    }
+  }
+  return outer;
 }
 
 function sourceBleedsForOutput(meta, rotation, desiredOutputBleed) {
@@ -252,7 +286,7 @@ async function inspectBarcode(file) {
 }
 
 async function buildImposedPdf(sourceFile, meta, settings) {
-  const { pageIndex, rotation, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset, marks, duploRegMark, barcodeFile } = settings;
+  const { pageIndex, rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset, marks, duploRegMark, barcodeFile } = settings;
   const source = await PDFDocument.load(await sourceFile.arrayBuffer(), { updateMetadata: false });
   const sourcePage = source.getPage(pageIndex);
   const trim = sourcePage.getTrimBox();
@@ -265,8 +299,8 @@ async function buildImposedPdf(sourceFile, meta, settings) {
   const gutterSlitPt = gutterSlit * POINTS_PER_MM;
   const layoutWidth = cols * itemWidth + (cols - 1) * gutterSlitPt;
   const layoutHeight = rows * itemHeight + (rows - 1) * gutterCutPt;
-  const availableOutputBleed = outputBleedAvailability(meta, rotation);
-  const outer = Object.fromEntries(Object.entries(availableOutputBleed).map(([side, available]) => [side, Math.min(OUTER_BLEED_MM, available) * POINTS_PER_MM]));
+  const outerMm = calculateOuterBleed(meta, rotation, rotationPattern, rows, cols);
+  const outer = Object.fromEntries(Object.entries(outerMm).map(([side, value]) => [side, value * POINTS_PER_MM]));
   const footprintWidth = layoutWidth + outer.left + outer.right;
   const layoutX = (outputPage.getWidth() - footprintWidth) / 2 + outer.left;
   // Top trim is measured to the first finished cut line, not to the outer bleed edge.
@@ -276,13 +310,14 @@ async function buildImposedPdf(sourceFile, meta, settings) {
 
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
+      const actualRotation = cellRotation(rotation, rotationPattern, row, col);
       const desiredOutputBleed = {
-        top: row === 0 ? OUTER_BLEED_MM : gutterCut / 2,
-        bottom: row === rows - 1 ? OUTER_BLEED_MM : gutterCut / 2,
-        left: col === 0 ? OUTER_BLEED_MM : gutterSlit / 2,
-        right: col === cols - 1 ? OUTER_BLEED_MM : gutterSlit / 2,
+        top: row === 0 ? outerMm.top : gutterCut / 2,
+        bottom: row === rows - 1 ? outerMm.bottom : gutterCut / 2,
+        left: col === 0 ? outerMm.left : gutterSlit / 2,
+        right: col === cols - 1 ? outerMm.right : gutterSlit / 2,
       };
-      const bleed = sourceBleedsForOutput(meta, rotation, desiredOutputBleed);
+      const bleed = sourceBleedsForOutput(meta, actualRotation, desiredOutputBleed);
       const cropKey = `${bleed.top}|${bleed.bottom}|${bleed.left}|${bleed.right}`;
       let embedded = embeddedByCrop.get(cropKey);
       if (!embedded) {
@@ -296,7 +331,7 @@ async function buildImposedPdf(sourceFile, meta, settings) {
       }
       const trimX = layoutX + col * (itemWidth + gutterSlitPt);
       const trimY = finishedTop - itemHeight - row * (itemHeight + gutterCutPt);
-      drawEmbeddedArtwork(outputPage, embedded, trim, bleed, rotation, trimX, trimY);
+      drawEmbeddedArtwork(outputPage, embedded, trim, bleed, actualRotation, trimX, trimY);
     }
   }
 
@@ -328,6 +363,7 @@ async function renderOutputPdf(bytes) {
 
 function App() {
   const [rotation, setRotation] = useState(0);
+  const [rotationPattern, setRotationPattern] = useState('same');
   const [cols, setCols] = useState(3);
   const [rows, setRows] = useState(4);
   const [marks, setMarks] = useState(true);
@@ -364,8 +400,7 @@ function App() {
   const itemH = meta ? (quarterTurn ? meta.width : meta.height) : 88.9;
   const layoutW = cols * itemW + (cols - 1) * gutterSlit;
   const layoutH = rows * itemH + (rows - 1) * gutterCut;
-  const availableOuterBleed = meta ? outputBleedAvailability(meta, rotation) : { top: OUTER_BLEED_MM, bottom: OUTER_BLEED_MM, left: OUTER_BLEED_MM, right: OUTER_BLEED_MM };
-  const appliedOuterBleed = Object.fromEntries(Object.entries(availableOuterBleed).map(([side, available]) => [side, Math.min(OUTER_BLEED_MM, available)]));
+  const appliedOuterBleed = calculateOuterBleed(meta, rotation, rotationPattern, rows, cols);
   const outerBleedShortfall = meta && Object.values(appliedOuterBleed).some(value => value < OUTER_BLEED_MM - 0.01);
   const footprintW = layoutW + appliedOuterBleed.left + appliedOuterBleed.right;
   const footprintH = layoutH + appliedOuterBleed.top + appliedOuterBleed.bottom;
@@ -379,7 +414,7 @@ function App() {
   const barcodeOverlap = Boolean(barcodeMeta && barcodeName && barcodeRight > artworkLeft && barcodeLeft < artworkRight && barcodeBottom > artworkTop);
   const geometricFit = validSheet && footprintW <= sheetW && topOffset >= appliedOuterBleed.top && topOffset + layoutH + appliedOuterBleed.bottom <= sheetH;
   const canExport = geometricFit && (!barcodeOverlap || allowBarcodeOverlap);
-  const settings = useMemo(() => ({ pageIndex: selectedPage, rotation, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset, marks, duploRegMark, barcodeFile }), [selectedPage, rotation, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset, marks, duploRegMark, barcodeFile]);
+  const settings = useMemo(() => ({ pageIndex: selectedPage, rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset, marks, duploRegMark, barcodeFile }), [selectedPage, rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset, marks, duploRegMark, barcodeFile]);
 
   useEffect(() => {
     let cancelled = false;
@@ -439,7 +474,7 @@ function App() {
 
   useEffect(() => {
     setAllowBarcodeOverlap(false);
-  }, [barcodeName, sheetW, sheetH, topOffset, cols, rows, gutterCut, gutterSlit, rotation, selectedPage]);
+  }, [barcodeName, sheetW, sheetH, topOffset, cols, rows, gutterCut, gutterSlit, rotation, rotationPattern, selectedPage]);
 
   const setBarcodeFromEntry = async (name, entries = barcodeEntries) => {
     setBarcodeName(name);
@@ -507,7 +542,7 @@ function App() {
     const preset = {
       id: existing?.id || (globalThis.crypto?.randomUUID?.() ?? `preset-${Date.now()}`),
       name: cleanName,
-      paperPreset, sheetW, sheetH, rotation, cols, rows, gutterCut, gutterSlit,
+      paperPreset, sheetW, sheetH, rotation, rotationPattern, cols, rows, gutterCut, gutterSlit,
       topTrim: topOffset, marks, duploRegMark, barcodeName,
     };
     const next = existing ? savedPresets.map(item => item.id === existing.id ? preset : item) : [...savedPresets, preset];
@@ -522,7 +557,7 @@ function App() {
     if (!preset) return;
     setPaperPreset(preset.paperPreset);
     setSheetW(preset.sheetW); setSheetH(preset.sheetH);
-    setRotation(preset.rotation); setCols(preset.cols); setRows(preset.rows);
+    setRotation(preset.rotation); setRotationPattern(preset.rotationPattern || 'same'); setCols(preset.cols); setRows(preset.rows);
     setGutterCut(preset.gutterCut); setGutterSlit(preset.gutterSlit);
     setTopOffset(preset.topTrim); setMarks(preset.marks); setDuploRegMark(preset.duploRegMark);
     setPresetName(preset.name);
@@ -605,9 +640,9 @@ function App() {
       {meta && <><div className="detected"><CheckCircle2/><div><b>PDF inspected · {meta.pages} {meta.pages === 1 ? 'page' : 'pages'}</b><span>Selected page {selectedPage + 1} · Finished trim: {display(meta.width)} × {display(meta.height)}</span><small>Bleed: T {display(meta.top)}, B {display(meta.bottom)}, L {display(meta.left)}, R {display(meta.right)}</small></div></div>{meta.pages > 1 && <label className="select pdf-page-select"><span>Artwork page</span><select aria-label="Artwork page" value={selectedPage} onChange={selectPdfPage} disabled={busy}>{Array.from({ length: meta.pages }, (_, index) => <option key={index} value={index}>Page {index + 1}</option>)}</select></label>}</>}
       <div className="rule"/><section><h2>Paper size · portrait only</h2><label className="select"><span>Sheet preset</span><select aria-label="Sheet preset" value={paperPreset} onChange={event => selectPaper(event.target.value)}><option value="13x19">13 × 19 in</option><option value="12.4x18.4">12.4 × 18.4 in</option><option value="custom">Custom size</option></select></label>{paperPreset === 'custom' && <div className="two"><NumberField label="Sheet width" value={sheetW} setValue={setSheetW} min={MIN_SHEET_MM} max={MAX_SHEET_WIDTH_MM} unit={unit} factor={factor}/><NumberField label="Sheet length" value={sheetH} setValue={setSheetH} min={MIN_SHEET_MM} max={MAX_SHEET_HEIGHT_MM} unit={unit} factor={factor}/></div>}</section>
       <div className="rule"/><section><h2>Duplo job barcode</h2><div className="barcode-actions"><button type="button" className="secondary" onClick={connectBarcodeDirectory}><FolderOpen size={14}/> {barcodeDirectoryHandle ? 'Reconnect folder' : 'Choose barcode folder'}</button><span className="barcode-status">{barcodeFolderStatus}</span></div><label className="session-loader"><input className="barcode-file-input" type="file" accept="application/pdf" multiple webkitdirectory="" onChange={loadBarcodeFilesForSession}/><span>Load folder for this session</span></label><label className="select"><span>Job barcode</span><select aria-label="Job barcode" value={barcodeName} onChange={event => setBarcodeFromEntry(event.target.value)}><option value="">No barcode</option>{barcodeEntries.map(entry => <option key={entry.name} value={entry.name}>{entry.name.replace(/\.pdf$/i, '')}</option>)}</select></label><div className="calculation barcode-spec"><span>Bottom-cropped barcode · white knockout · top layer</span><b>{display(BARCODE_HEIGHT_MM)} high · top {display(BARCODE_TOP_OFFSET_MM)} · right {display(BARCODE_RIGHT_OFFSET_MM)}</b></div><p className="hint barcode-hint">The original PDF stays unchanged. A {display(BARCODE_KNOCKOUT_PADDING_MM)} white knockout protects the barcode over artwork.</p>{barcodeOverlap && <div className="overlap-approval"><p><AlertTriangle size={14}/> Barcode overlaps the imposed artwork.</p><label className="toggle-row"><span>Allow barcode over artwork</span><input type="checkbox" checked={allowBarcodeOverlap} onChange={event => setAllowBarcodeOverlap(event.target.checked)}/></label><small>The barcode remains on the top layer with its white knockout. Approval resets when layout settings change.</small></div>}</section>
-      <div className="rule"/><section><h2>Artwork rotation</h2><div className="rotation">{[0, 90, 180, 270].map(angle => <button key={angle} className={rotation === angle ? 'selected' : ''} onClick={() => setRotation(angle)}>{angle}°</button>)}</div></section>
+      <div className="rule"/><section><h2>Artwork rotation</h2><div className="rotation">{[0, 90, 180, 270].map(angle => <button key={angle} className={rotation === angle ? 'selected' : ''} onClick={() => setRotation(angle)}>{angle}°</button>)}</div><label className="select rotation-pattern"><span>180° repeat pattern</span><select aria-label="180 degree repeat pattern" value={rotationPattern} onChange={event => setRotationPattern(event.target.value)}>{ROTATION_PATTERNS.map(pattern => <option key={pattern.value} value={pattern.value}>{pattern.label}</option>)}</select></label><p className="hint">The pattern adds 180° to the selected base rotation. Checkerboard is useful when both gutters are zero and opposite artwork edges need to meet.</p></section>
       <div className="rule"/><section><h2>Step & repeat</h2><div className="two"><NumberField label="Columns" value={cols} setValue={setCols} min={1} max={25} unit=""/><NumberField label="Rows" value={rows} setValue={setRows} min={1} max={25} unit=""/></div></section>
-      <div className="rule"/><section><h2>Finishing allowance</h2><div className="two"><NumberField label="Gutter cut · up / down" value={gutterCut} setValue={setGutterCut} unit={unit} factor={factor}/><NumberField label="Gutter slit · left / right" value={gutterSlit} setValue={setGutterSlit} unit={unit} factor={factor}/></div><NumberField label="Top trim / first gutter cut" value={topOffset} setValue={setTopOffset} max={100} unit={unit} factor={factor}/><p className="hint">Measured from the sheet top to the first finished trim line. Outer bleed extends above that trim line.</p><div className="calculation"><span>Outer perimeter bleed · fixed {display(OUTER_BLEED_MM)}</span><b>Applied T {display(appliedOuterBleed.top)} · B {display(appliedOuterBleed.bottom)} · L {display(appliedOuterBleed.left)} · R {display(appliedOuterBleed.right)}</b></div>{outerBleedShortfall && <p className="error">Source PDF bleed is less than {display(OUTER_BLEED_MM)} on one or more sides. Available bleed is applied without stretching artwork.</p>}<p className="hint">Internal bleed uses half the gutter. At zero gutter, shared boundaries use no bleed and one common-cut mark.</p><label className="toggle-row"><span>Production trim marks</span><input type="checkbox" checked={marks} onChange={event => setMarks(event.target.checked)}/></label><label className="toggle-row"><span>Duplo registration mark</span><input type="checkbox" checked={duploRegMark} onChange={event => setDuploRegMark(event.target.checked)}/></label><p className="hint">Top-right L mark · 5 mm long · 0.4 mm thick · 5 mm from top/right sheet edges.</p></section>
+      <div className="rule"/><section><h2>Finishing allowance</h2><div className="two"><NumberField label="Gutter cut · up / down" value={gutterCut} setValue={setGutterCut} unit={unit} factor={factor}/><NumberField label="Gutter slit · left / right" value={gutterSlit} setValue={setGutterSlit} unit={unit} factor={factor}/></div><NumberField label="Top trim / first gutter cut" value={topOffset} setValue={setTopOffset} max={100} unit={unit} factor={factor}/><p className="hint">Measured from the sheet top to the first finished trim line. Outer bleed extends above that trim line.</p><div className="calculation"><span>Outer perimeter bleed · target {display(OUTER_BLEED_MM)}</span><b>Applied T {display(appliedOuterBleed.top)} · B {display(appliedOuterBleed.bottom)} · L {display(appliedOuterBleed.left)} · R {display(appliedOuterBleed.right)}</b></div>{outerBleedShortfall && <p className="error">The common outer bleed is reduced to the least source bleed available across all rotated edge cells. Artwork is never stretched.</p>}<p className="hint">Internal bleed uses half the gutter. At zero gutter, shared boundaries use no bleed and one common-cut mark.</p><label className="toggle-row"><span>Production trim marks</span><input type="checkbox" checked={marks} onChange={event => setMarks(event.target.checked)}/></label><label className="toggle-row"><span>Duplo registration mark</span><input type="checkbox" checked={duploRegMark} onChange={event => setDuploRegMark(event.target.checked)}/></label><p className="hint">Top-right L mark · 5 mm long · 0.4 mm thick · 5 mm from top/right sheet edges.</p></section>
       <div className="rule"/><section><h2>Saved presets</h2><input className="preset-name" aria-label="Preset name" placeholder="Preset name" value={presetName} onChange={event => setPresetName(event.target.value)}/><button type="button" className="secondary preset-save" onClick={savePreset}><Save size={14}/> Save current settings</button><div className="preset-actions"><select aria-label="Saved preset" value={selectedPresetId} onChange={event => setSelectedPresetId(event.target.value)}><option value="">Choose saved preset</option>{savedPresets.map(preset => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select><button type="button" className="secondary" disabled={!selectedPresetId} onClick={applyPreset}>Apply</button><button type="button" className="icon-button" aria-label="Delete selected preset" disabled={!selectedPresetId} onClick={deletePreset}><Trash2 size={14}/></button></div><p className="hint">Layout presets are stored in this browser. The selected barcode filename is restored from the remembered folder.</p></section>
       <div className={canExport ? 'summary' : 'summary warning'}><span>DC-616 CHECK</span><b>{canExport ? barcodeOverlap ? 'Barcode overlap approved' : 'Sheet & layout fit' : barcodeOverlap ? 'Approve barcode overlap to export' : 'Layout exceeds usable sheet area'}</b><small>Finished item: {display(itemW)} × {display(itemH)} · finished layout {display(layoutW)} × {display(layoutH)} · with outer bleed {display(footprintW)} × {display(footprintH)}</small></div>
     </aside>
