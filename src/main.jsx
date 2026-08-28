@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { AlertTriangle, CheckCircle2, Download, FileUp, FolderOpen, Grid3X3, Minus, Plus, Save, Scissors, Settings2, Trash2, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Download, FileUp, FolderOpen, Minus, Plus, Save, Settings2, Trash2, X } from 'lucide-react';
 import { degrees, PDFDocument, rgb } from 'pdf-lib';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import pdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
@@ -91,10 +91,10 @@ function loadStoredPresets() {
   }
 }
 
-function NumberField({ label, value, setValue, min = 0, max = 999, unit = 'mm', factor = 1 }) {
+function NumberField({ label, value, setValue, min = 0, max = 999, unit = 'mm', factor = 1, disabled = false }) {
   const shownValue = Number((numberValue(value) / factor).toFixed(unit === 'in' ? 3 : 1));
   return <label className="field"><span>{label}</span><div className="stepper">
-    <button type="button" onClick={() => setValue(Math.max(min, numberValue(value) - factor))}><Minus size={13}/></button>
+    <button type="button" disabled={disabled} onClick={() => setValue(Math.max(min, numberValue(value) - factor))}><Minus size={13}/></button>
     <input
       aria-label={label}
       value={shownValue}
@@ -102,9 +102,10 @@ function NumberField({ label, value, setValue, min = 0, max = 999, unit = 'mm', 
       min={min / factor}
       max={max / factor}
       step={unit === 'in' ? '0.001' : '0.1'}
+      disabled={disabled}
       onChange={event => setValue(Math.max(min, Math.min(max, numberValue(event.target.value) * factor)))}
     />
-    <button type="button" onClick={() => setValue(Math.min(max, numberValue(value) + factor))}><Plus size={13}/></button>
+    <button type="button" disabled={disabled} onClick={() => setValue(Math.min(max, numberValue(value) + factor))}><Plus size={13}/></button>
     {unit && <i>{unit}</i>}
   </div></label>;
 }
@@ -286,7 +287,7 @@ async function inspectBarcode(file) {
 }
 
 async function buildImposedPdf(sourceFile, meta, settings) {
-  const { pageIndex, rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset, marks, duploRegMark, barcodeFile } = settings;
+  const { pageIndex, rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset, horizontalPlacement, sideTrim, marks, duploRegMark, barcodeFile } = settings;
   const source = await PDFDocument.load(await sourceFile.arrayBuffer(), { updateMetadata: false });
   const sourcePage = source.getPage(pageIndex);
   const trim = sourcePage.getTrimBox();
@@ -302,7 +303,9 @@ async function buildImposedPdf(sourceFile, meta, settings) {
   const outerMm = calculateOuterBleed(meta, rotation, rotationPattern, rows, cols);
   const outer = Object.fromEntries(Object.entries(outerMm).map(([side, value]) => [side, value * POINTS_PER_MM]));
   const footprintWidth = layoutWidth + outer.left + outer.right;
-  const layoutX = (outputPage.getWidth() - footprintWidth) / 2 + outer.left;
+  const layoutX = horizontalPlacement === 'manual'
+    ? outputPage.getWidth() - sideTrim * POINTS_PER_MM - layoutWidth
+    : (outputPage.getWidth() - footprintWidth) / 2 + outer.left;
   // Top trim is measured to the first finished cut line, not to the outer bleed edge.
   const finishedTop = outputPage.getHeight() - topOffset * POINTS_PER_MM;
   const layoutY = finishedTop - layoutHeight;
@@ -382,6 +385,9 @@ function App() {
   const [gutterCut, setGutterCut] = useState(5);
   const [gutterSlit, setGutterSlit] = useState(5);
   const [topOffset, setTopOffset] = useState(10);
+  const [horizontalPlacement, setHorizontalPlacement] = useState('center');
+  const [sideTrim, setSideTrim] = useState(10);
+  const [inspectorTab, setInspectorTab] = useState('layout');
   const [barcodeDirectoryHandle, setBarcodeDirectoryHandle] = useState(null);
   const [barcodeEntries, setBarcodeEntries] = useState([]);
   const [barcodeFile, setBarcodeFile] = useState(null);
@@ -405,16 +411,20 @@ function App() {
   const footprintW = layoutW + appliedOuterBleed.left + appliedOuterBleed.right;
   const footprintH = layoutH + appliedOuterBleed.top + appliedOuterBleed.bottom;
   const validSheet = sheetW >= MIN_SHEET_MM && sheetH >= MIN_SHEET_MM && sheetW <= MAX_SHEET_WIDTH_MM && sheetH <= MAX_SHEET_HEIGHT_MM;
-  const artworkLeft = (sheetW - footprintW) / 2;
-  const artworkRight = artworkLeft + footprintW;
+  const layoutLeft = horizontalPlacement === 'manual'
+    ? sheetW - sideTrim - layoutW
+    : (sheetW - footprintW) / 2 + appliedOuterBleed.left;
+  const artworkLeft = layoutLeft - appliedOuterBleed.left;
+  const artworkRight = layoutLeft + layoutW + appliedOuterBleed.right;
+  const calculatedSideTrim = sheetW - layoutLeft - layoutW;
   const artworkTop = topOffset - appliedOuterBleed.top;
   const barcodeLeft = barcodeMeta ? sheetW - BARCODE_RIGHT_OFFSET_MM - barcodeMeta.width - BARCODE_KNOCKOUT_PADDING_MM : 0;
   const barcodeRight = sheetW - BARCODE_RIGHT_OFFSET_MM + BARCODE_KNOCKOUT_PADDING_MM;
   const barcodeBottom = barcodeMeta ? BARCODE_TOP_OFFSET_MM + barcodeMeta.height + BARCODE_KNOCKOUT_PADDING_MM : 0;
   const barcodeOverlap = Boolean(barcodeMeta && barcodeName && barcodeRight > artworkLeft && barcodeLeft < artworkRight && barcodeBottom > artworkTop);
-  const geometricFit = validSheet && footprintW <= sheetW && topOffset >= appliedOuterBleed.top && topOffset + layoutH + appliedOuterBleed.bottom <= sheetH;
+  const geometricFit = validSheet && artworkLeft >= 0 && artworkRight <= sheetW && topOffset >= appliedOuterBleed.top && topOffset + layoutH + appliedOuterBleed.bottom <= sheetH;
   const canExport = geometricFit && (!barcodeOverlap || allowBarcodeOverlap);
-  const settings = useMemo(() => ({ pageIndex: selectedPage, rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset, marks, duploRegMark, barcodeFile }), [selectedPage, rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset, marks, duploRegMark, barcodeFile]);
+  const settings = useMemo(() => ({ pageIndex: selectedPage, rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset, horizontalPlacement, sideTrim, marks, duploRegMark, barcodeFile }), [selectedPage, rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset, horizontalPlacement, sideTrim, marks, duploRegMark, barcodeFile]);
 
   useEffect(() => {
     let cancelled = false;
@@ -474,7 +484,7 @@ function App() {
 
   useEffect(() => {
     setAllowBarcodeOverlap(false);
-  }, [barcodeName, sheetW, sheetH, topOffset, cols, rows, gutterCut, gutterSlit, rotation, rotationPattern, selectedPage]);
+  }, [barcodeName, sheetW, sheetH, topOffset, horizontalPlacement, sideTrim, cols, rows, gutterCut, gutterSlit, rotation, rotationPattern, selectedPage]);
 
   const setBarcodeFromEntry = async (name, entries = barcodeEntries) => {
     setBarcodeName(name);
@@ -543,7 +553,7 @@ function App() {
       id: existing?.id || (globalThis.crypto?.randomUUID?.() ?? `preset-${Date.now()}`),
       name: cleanName,
       paperPreset, sheetW, sheetH, rotation, rotationPattern, cols, rows, gutterCut, gutterSlit,
-      topTrim: topOffset, marks, duploRegMark, barcodeName,
+      topTrim: topOffset, horizontalPlacement, sideTrim, marks, duploRegMark, barcodeName,
     };
     const next = existing ? savedPresets.map(item => item.id === existing.id ? preset : item) : [...savedPresets, preset];
     setSavedPresets(next);
@@ -559,7 +569,7 @@ function App() {
     setSheetW(preset.sheetW); setSheetH(preset.sheetH);
     setRotation(preset.rotation); setRotationPattern(preset.rotationPattern || 'same'); setCols(preset.cols); setRows(preset.rows);
     setGutterCut(preset.gutterCut); setGutterSlit(preset.gutterSlit);
-    setTopOffset(preset.topTrim); setMarks(preset.marks); setDuploRegMark(preset.duploRegMark);
+    setTopOffset(preset.topTrim); setHorizontalPlacement(preset.horizontalPlacement || 'center'); setSideTrim(preset.sideTrim ?? 10); setMarks(preset.marks); setDuploRegMark(preset.duploRegMark);
     setPresetName(preset.name);
     await setBarcodeFromEntry(preset.barcodeName || '');
   };
@@ -626,25 +636,51 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
-  return <main className="app">
-    <aside className="left"><div className="brand"><span className="brand-mark">R</span><span>repeat</span></div><button className="new"><Plus size={17}/> New job</button><nav><a className="active"><Grid3X3/> Imposition</a><a><Scissors/> DC-616 program</a><a><Settings2/> Presets</a></nav><div className="job"><small>CURRENT JOB</small><strong>Duplo 616 sheet</strong><span>Output-proof workflow</span></div><div className="left-bottom">DC-616 compatible planning<br/><b>13 × 19 in max sheet</b></div></aside>
-    <section className="work"><header><div className="crumb">Jobs <b>/</b> Duplo 616 sheet</div><button className="export" disabled={!outputBytes || busy || !canExport} onClick={downloadOutput}><Download size={16}/> {busy ? 'Generating…' : 'Export imposed PDF'}</button></header>
+  return <main className="app app-redesign">
+    <header className="topbar">
+      <div className="brand compact-brand"><span className="brand-mark">R</span><span>Repeat</span></div>
+      <button className="top-action" type="button" onClick={() => { setSourceFile(null); setMeta(null); setSelectedPage(0); setProofImage(null); setOutputBytes(null); setError(''); }}><Plus size={16}/> New Job</button>
+      <button className="top-action" type="button" onClick={() => setInspectorTab('duplo')}><Settings2 size={15}/> Presets</button>
+      <div className="top-divider"/>
+      <div className="job-title"><strong>Duplo 616 sheet</strong><span><CheckCircle2 size={14}/> Output-proof workflow</span></div>
+      <button className="export" disabled={!outputBytes || busy || !canExport} onClick={downloadOutput}><Download size={16}/> {busy ? 'Generating…' : 'Export imposed PDF'}</button>
+      <div className="unit-switch"><button className={unit === 'mm' ? 'selected' : ''} onClick={() => setUnit('mm')}>mm</button><button className={unit === 'in' ? 'selected' : ''} onClick={() => setUnit('in')}>in</button></div>
+    </header>
+
+    <section className="work redesigned-work">
       <div className="canvas-wrap"><div className="sheet proof-sheet" style={{ aspectRatio: sheetW / sheetH }}>
         {proofImage ? <img className="proof-image" src={proofImage} alt="Generated imposed PDF proof"/> : <div className="proof-empty">{sourceFile && !geometricFit ? 'Layout does not fit this sheet' : 'Upload a PDF to generate the exact output proof'}</div>}
       </div></div>
       <footer><span className={canExport ? 'ok' : 'warn'}>{canExport ? <CheckCircle2/> : <AlertTriangle/>} {canExport ? (busy ? 'Generating output proof' : barcodeOverlap ? 'Overlap approved · preview matches export' : 'Preview matches export') : barcodeOverlap ? 'Barcode overlap needs approval' : 'Check sheet / fit'}</span><span>Finished size · {display(itemW)} × {display(itemH)}</span><span>{cols} × {rows} · {cols * rows} up</span></footer>
     </section>
-    <aside className="inspector"><div className="ins-title"><h1>Duplo 616 layout</h1><div className="unit-switch"><button className={unit === 'mm' ? 'selected' : ''} onClick={() => setUnit('mm')}>mm</button><button className={unit === 'in' ? 'selected' : ''} onClick={() => setUnit('in')}>in</button></div></div>
-      <section className="upload"><input id="upload" type="file" accept="application/pdf" onChange={upload}/><label htmlFor="upload"><FileUp size={19}/><b>{sourceFile ? 'Replace PDF artwork' : 'Upload PDF artwork'}</b><span>TrimBox and BleedBox are read automatically</span></label>{sourceFile && <button className="clear" onClick={() => { setSourceFile(null); setMeta(null); setSelectedPage(0); setProofImage(null); setOutputBytes(null); }}><X size={14}/> Remove</button>}</section>
-      {error && <p className="error">{error}</p>}
-      {meta && <><div className="detected"><CheckCircle2/><div><b>PDF inspected · {meta.pages} {meta.pages === 1 ? 'page' : 'pages'}</b><span>Selected page {selectedPage + 1} · Finished trim: {display(meta.width)} × {display(meta.height)}</span><small>Bleed: T {display(meta.top)}, B {display(meta.bottom)}, L {display(meta.left)}, R {display(meta.right)}</small></div></div>{meta.pages > 1 && <label className="select pdf-page-select"><span>Artwork page</span><select aria-label="Artwork page" value={selectedPage} onChange={selectPdfPage} disabled={busy}>{Array.from({ length: meta.pages }, (_, index) => <option key={index} value={index}>Page {index + 1}</option>)}</select></label>}</>}
-      <div className="rule"/><section><h2>Paper size · portrait only</h2><label className="select"><span>Sheet preset</span><select aria-label="Sheet preset" value={paperPreset} onChange={event => selectPaper(event.target.value)}><option value="13x19">13 × 19 in</option><option value="12.4x18.4">12.4 × 18.4 in</option><option value="custom">Custom size</option></select></label>{paperPreset === 'custom' && <div className="two"><NumberField label="Sheet width" value={sheetW} setValue={setSheetW} min={MIN_SHEET_MM} max={MAX_SHEET_WIDTH_MM} unit={unit} factor={factor}/><NumberField label="Sheet length" value={sheetH} setValue={setSheetH} min={MIN_SHEET_MM} max={MAX_SHEET_HEIGHT_MM} unit={unit} factor={factor}/></div>}</section>
-      <div className="rule"/><section><h2>Duplo job barcode</h2><div className="barcode-actions"><button type="button" className="secondary" onClick={connectBarcodeDirectory}><FolderOpen size={14}/> {barcodeDirectoryHandle ? 'Reconnect folder' : 'Choose barcode folder'}</button><span className="barcode-status">{barcodeFolderStatus}</span></div><label className="session-loader"><input className="barcode-file-input" type="file" accept="application/pdf" multiple webkitdirectory="" onChange={loadBarcodeFilesForSession}/><span>Load folder for this session</span></label><label className="select"><span>Job barcode</span><select aria-label="Job barcode" value={barcodeName} onChange={event => setBarcodeFromEntry(event.target.value)}><option value="">No barcode</option>{barcodeEntries.map(entry => <option key={entry.name} value={entry.name}>{entry.name.replace(/\.pdf$/i, '')}</option>)}</select></label><div className="calculation barcode-spec"><span>Bottom-cropped barcode · white knockout · top layer</span><b>{display(BARCODE_HEIGHT_MM)} high · top {display(BARCODE_TOP_OFFSET_MM)} · right {display(BARCODE_RIGHT_OFFSET_MM)}</b></div><p className="hint barcode-hint">The original PDF stays unchanged. A {display(BARCODE_KNOCKOUT_PADDING_MM)} white knockout protects the barcode over artwork.</p>{barcodeOverlap && <div className="overlap-approval"><p><AlertTriangle size={14}/> Barcode overlaps the imposed artwork.</p><label className="toggle-row"><span>Allow barcode over artwork</span><input type="checkbox" checked={allowBarcodeOverlap} onChange={event => setAllowBarcodeOverlap(event.target.checked)}/></label><small>The barcode remains on the top layer with its white knockout. Approval resets when layout settings change.</small></div>}</section>
-      <div className="rule"/><section><h2>Artwork rotation</h2><div className="rotation">{[0, 90, 180, 270].map(angle => <button key={angle} className={rotation === angle ? 'selected' : ''} onClick={() => setRotation(angle)}>{angle}°</button>)}</div><label className="select rotation-pattern"><span>180° repeat pattern</span><select aria-label="180 degree repeat pattern" value={rotationPattern} onChange={event => setRotationPattern(event.target.value)}>{ROTATION_PATTERNS.map(pattern => <option key={pattern.value} value={pattern.value}>{pattern.label}</option>)}</select></label><p className="hint">The pattern adds 180° to the selected base rotation. Checkerboard is useful when both gutters are zero and opposite artwork edges need to meet.</p></section>
-      <div className="rule"/><section><h2>Step & repeat</h2><div className="two"><NumberField label="Columns" value={cols} setValue={setCols} min={1} max={25} unit=""/><NumberField label="Rows" value={rows} setValue={setRows} min={1} max={25} unit=""/></div></section>
-      <div className="rule"/><section><h2>Finishing allowance</h2><div className="two"><NumberField label="Gutter cut · up / down" value={gutterCut} setValue={setGutterCut} unit={unit} factor={factor}/><NumberField label="Gutter slit · left / right" value={gutterSlit} setValue={setGutterSlit} unit={unit} factor={factor}/></div><NumberField label="Top trim / first gutter cut" value={topOffset} setValue={setTopOffset} max={100} unit={unit} factor={factor}/><p className="hint">Measured from the sheet top to the first finished trim line. Outer bleed extends above that trim line.</p><div className="calculation"><span>Outer perimeter bleed · target {display(OUTER_BLEED_MM)}</span><b>Applied T {display(appliedOuterBleed.top)} · B {display(appliedOuterBleed.bottom)} · L {display(appliedOuterBleed.left)} · R {display(appliedOuterBleed.right)}</b></div>{outerBleedShortfall && <p className="error">The common outer bleed is reduced to the least source bleed available across all rotated edge cells. Artwork is never stretched.</p>}<p className="hint">Internal bleed uses half the gutter. At zero gutter, shared boundaries use no bleed and one common-cut mark.</p><label className="toggle-row"><span>Production trim marks</span><input type="checkbox" checked={marks} onChange={event => setMarks(event.target.checked)}/></label><label className="toggle-row"><span>Duplo registration mark</span><input type="checkbox" checked={duploRegMark} onChange={event => setDuploRegMark(event.target.checked)}/></label><p className="hint">Top-right L mark · 5 mm long · 0.4 mm thick · 5 mm from top/right sheet edges.</p></section>
-      <div className="rule"/><section><h2>Saved presets</h2><input className="preset-name" aria-label="Preset name" placeholder="Preset name" value={presetName} onChange={event => setPresetName(event.target.value)}/><button type="button" className="secondary preset-save" onClick={savePreset}><Save size={14}/> Save current settings</button><div className="preset-actions"><select aria-label="Saved preset" value={selectedPresetId} onChange={event => setSelectedPresetId(event.target.value)}><option value="">Choose saved preset</option>{savedPresets.map(preset => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select><button type="button" className="secondary" disabled={!selectedPresetId} onClick={applyPreset}>Apply</button><button type="button" className="icon-button" aria-label="Delete selected preset" disabled={!selectedPresetId} onClick={deletePreset}><Trash2 size={14}/></button></div><p className="hint">Layout presets are stored in this browser. The selected barcode filename is restored from the remembered folder.</p></section>
-      <div className={canExport ? 'summary' : 'summary warning'}><span>DC-616 CHECK</span><b>{canExport ? barcodeOverlap ? 'Barcode overlap approved' : 'Sheet & layout fit' : barcodeOverlap ? 'Approve barcode overlap to export' : 'Layout exceeds usable sheet area'}</b><small>Finished item: {display(itemW)} × {display(itemH)} · finished layout {display(layoutW)} × {display(layoutH)} · with outer bleed {display(footprintW)} × {display(footprintH)}</small></div>
+
+    <aside className="inspector redesigned-inspector">
+      <section className="artwork-panel">
+        <h1>Artwork</h1>
+        <section className="upload compact-upload"><input id="upload" type="file" accept="application/pdf" onChange={upload}/><label htmlFor="upload"><FileUp size={17}/><b>{sourceFile ? 'Replace PDF' : 'Upload PDF'}</b></label>{sourceFile && <button className="clear" onClick={() => { setSourceFile(null); setMeta(null); setSelectedPage(0); setProofImage(null); setOutputBytes(null); setError(''); }}><X size={14}/> Remove</button>}</section>
+        {error && <p className="error">{error}</p>}
+        {meta ? <div className="detected compact-detected"><CheckCircle2/><div><b>PDF inspected · {meta.pages} {meta.pages === 1 ? 'page' : 'pages'}</b><span>Trim {display(meta.width)} × {display(meta.height)} · Bleed T {display(meta.top)}, B {display(meta.bottom)}, L {display(meta.left)}, R {display(meta.right)}</span></div></div> : <p className="empty-meta">TrimBox and BleedBox are read automatically</p>}
+        {meta?.pages > 1 && <label className="select compact-select"><span>Page</span><select aria-label="Artwork page" value={selectedPage} onChange={selectPdfPage} disabled={busy}>{Array.from({ length: meta.pages }, (_, index) => <option key={index} value={index}>Page {index + 1} / {meta.pages}</option>)}</select></label>}
+        <div className="control-label">Base rotation</div>
+        <div className="rotation segmented">{[0, 90, 180, 270].map(angle => <button key={angle} className={rotation === angle ? 'selected' : ''} onClick={() => setRotation(angle)}>{angle}°</button>)}</div>
+        <label className="select rotation-pattern compact-select"><span>Repeat pattern</span><select aria-label="180 degree repeat pattern" value={rotationPattern} onChange={event => setRotationPattern(event.target.value)}>{ROTATION_PATTERNS.map(pattern => <option key={pattern.value} value={pattern.value}>{pattern.label}</option>)}</select></label>
+      </section>
+
+      <div className="inspector-tabs" role="tablist" aria-label="Inspector settings">
+        <button role="tab" aria-selected={inspectorTab === 'layout'} className={inspectorTab === 'layout' ? 'selected' : ''} onClick={() => setInspectorTab('layout')}>Layout</button>
+        <button role="tab" aria-selected={inspectorTab === 'duplo'} className={inspectorTab === 'duplo' ? 'selected' : ''} onClick={() => setInspectorTab('duplo')}>Duplo</button>
+      </div>
+
+      {inspectorTab === 'layout' ? <div className="tab-panel" role="tabpanel">
+        <section><h2>Sheet & repeat</h2><label className="select"><span>Paper size</span><select aria-label="Sheet preset" value={paperPreset} onChange={event => selectPaper(event.target.value)}><option value="13x19">13 × 19 in</option><option value="12.4x18.4">12.4 × 18.4 in</option><option value="custom">Custom size</option></select></label>{paperPreset === 'custom' && <div className="two"><NumberField label="Sheet width" value={sheetW} setValue={setSheetW} min={MIN_SHEET_MM} max={MAX_SHEET_WIDTH_MM} unit={unit} factor={factor}/><NumberField label="Sheet length" value={sheetH} setValue={setSheetH} min={MIN_SHEET_MM} max={MAX_SHEET_HEIGHT_MM} unit={unit} factor={factor}/></div>}<div className="two"><NumberField label="Columns" value={cols} setValue={setCols} min={1} max={25} unit=""/><NumberField label="Rows" value={rows} setValue={setRows} min={1} max={25} unit=""/></div><div className="layout-total"><span>Total up</span><b>{cols * rows}</b></div></section>
+        <section className="compact-summary"><h2>Output size</h2><div className="summary-grid"><span>Finished item<b>{display(itemW)} × {display(itemH)}</b></span><span>Layout<b>{display(layoutW)} × {display(layoutH)}</b></span><span>Outer bleed<b>T {display(appliedOuterBleed.top)} · B {display(appliedOuterBleed.bottom)} · L {display(appliedOuterBleed.left)} · R {display(appliedOuterBleed.right)}</b></span></div>{outerBleedShortfall && <p className="error">Common outer bleed is reduced to the least source bleed available across rotated edge cells.</p>}</section>
+      </div> : <div className="tab-panel" role="tabpanel">
+        <section><h2>Duplo finishing</h2><div className="two"><NumberField label="Lead Trim" value={topOffset} setValue={setTopOffset} max={100} unit={unit} factor={factor}/><NumberField label="Side Trim" value={calculatedSideTrim} setValue={setSideTrim} max={100} unit={unit} factor={factor} disabled={horizontalPlacement === 'center'}/></div><label className="placement-toggle"><span>Horizontal placement</span><select aria-label="Horizontal placement" value={horizontalPlacement} onChange={event => { const mode = event.target.value; if (mode === 'manual') setSideTrim(calculatedSideTrim); setHorizontalPlacement(mode); }}><option value="center">Centered · auto Side Trim</option><option value="manual">Manual Side Trim</option></select></label><div className="two"><NumberField label="Gutter Cut" value={gutterCut} setValue={setGutterCut} unit={unit} factor={factor}/><NumberField label="Gutter Slit" value={gutterSlit} setValue={setGutterSlit} unit={unit} factor={factor}/></div><p className="hint">Lead Trim is measured from the sheet top to the first finished cut line. Side Trim is measured from the sheet right edge to the first finished slit line.</p></section>
+        <section className="switches"><label className="toggle-row"><span>Production trim marks</span><input type="checkbox" checked={marks} onChange={event => setMarks(event.target.checked)}/></label><label className="toggle-row"><span>Duplo registration mark</span><input type="checkbox" checked={duploRegMark} onChange={event => setDuploRegMark(event.target.checked)}/></label></section>
+        <details className="advanced"><summary>Job barcode</summary><div className="details-body"><div className="barcode-actions"><button type="button" className="secondary" onClick={connectBarcodeDirectory}><FolderOpen size={14}/> {barcodeDirectoryHandle ? 'Reconnect folder' : 'Choose barcode folder'}</button><span className="barcode-status">{barcodeFolderStatus}</span></div><label className="session-loader"><input className="barcode-file-input" type="file" accept="application/pdf" multiple webkitdirectory="" onChange={loadBarcodeFilesForSession}/><span>Load folder for this session</span></label><label className="select"><span>Job barcode</span><select aria-label="Job barcode" value={barcodeName} onChange={event => setBarcodeFromEntry(event.target.value)}><option value="">No barcode</option>{barcodeEntries.map(entry => <option key={entry.name} value={entry.name}>{entry.name.replace(/\.pdf$/i, '')}</option>)}</select></label><div className="calculation barcode-spec"><span>Bottom crop · white knockout · top layer</span><b>{display(BARCODE_HEIGHT_MM)} high · top {display(BARCODE_TOP_OFFSET_MM)} · right {display(BARCODE_RIGHT_OFFSET_MM)}</b></div>{barcodeOverlap && <div className="overlap-approval"><p><AlertTriangle size={14}/> Barcode overlaps the imposed artwork.</p><label className="toggle-row"><span>Allow barcode over artwork</span><input type="checkbox" checked={allowBarcodeOverlap} onChange={event => setAllowBarcodeOverlap(event.target.checked)}/></label></div>}</div></details>
+        <details className="advanced"><summary>Saved presets</summary><div className="details-body"><input className="preset-name" aria-label="Preset name" placeholder="Preset name" value={presetName} onChange={event => setPresetName(event.target.value)}/><button type="button" className="secondary preset-save" onClick={savePreset}><Save size={14}/> Save current settings</button><div className="preset-actions"><select aria-label="Saved preset" value={selectedPresetId} onChange={event => setSelectedPresetId(event.target.value)}><option value="">Choose saved preset</option>{savedPresets.map(preset => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select><button type="button" className="secondary" disabled={!selectedPresetId} onClick={applyPreset}>Apply</button><button type="button" className="icon-button" aria-label="Delete selected preset" disabled={!selectedPresetId} onClick={deletePreset}><Trash2 size={14}/></button></div></div></details>
+        <div className={canExport ? 'summary compact-check' : 'summary warning compact-check'}><span>DC-616 CHECK</span><b>{canExport ? barcodeOverlap ? 'Barcode overlap approved' : 'Sheet & layout fit' : barcodeOverlap ? 'Approve barcode overlap to export' : 'Layout exceeds usable sheet area'}</b><small>Lead {display(topOffset)} · Side {display(calculatedSideTrim)} · Cut {display(gutterCut)} · Slit {display(gutterSlit)}</small></div>
+      </div>}
     </aside>
   </main>;
 }
