@@ -638,11 +638,11 @@ function App() {
   };
 
   return <main className="app app-redesign">
-    <header className="topbar">
-      <div className="brand compact-brand"><span className="brand-mark">R</span><span>Repeat</span></div>
-      <button className="top-action new-job-action" type="button" onClick={() => { setSourceFile(null); setMeta(null); setSelectedPage(0); setProofImage(null); setOutputBytes(null); setError(''); }}><Plus size={16}/> New Job</button>
+    <nav className="utility-rail" aria-label="Job actions">
+      <div className="rail-brand" aria-label="Repeat PDF Imposition"><span className="brand-mark">R</span></div>
+      <button className="rail-action" type="button" title="New Job" onClick={() => { setSourceFile(null); setMeta(null); setSelectedPage(0); setProofImage(null); setOutputBytes(null); setError(''); }}><Plus size={18}/><span>New</span></button>
       <div className="preset-menu-wrap">
-        <button className="top-action" type="button" aria-expanded={presetsOpen} aria-controls="preset-menu" onClick={() => setPresetsOpen(open => !open)}><Settings2 size={15}/> Presets</button>
+        <button className="rail-action" type="button" title="Presets" aria-expanded={presetsOpen} aria-controls="preset-menu" onClick={() => setPresetsOpen(open => !open)}><Settings2 size={18}/><span>Presets</span></button>
         {presetsOpen && <section id="preset-menu" className="preset-menu" aria-label="Saved presets">
           <div className="preset-menu-title"><div><b>Presets</b><span>Save or reuse the complete job setup</span></div><button type="button" aria-label="Close presets" onClick={() => setPresetsOpen(false)}><X size={15}/></button></div>
           <input className="preset-name" aria-label="Preset name" placeholder="Preset name" value={presetName} onChange={event => setPresetName(event.target.value)}/>
@@ -650,14 +650,13 @@ function App() {
           <div className="preset-actions"><select aria-label="Saved preset" value={selectedPresetId} onChange={event => setSelectedPresetId(event.target.value)}><option value="">Choose saved preset</option>{savedPresets.map(preset => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select><button type="button" className="secondary" disabled={!selectedPresetId} onClick={async () => { await applyPreset(); setPresetsOpen(false); }}>Apply</button><button type="button" className="icon-button" aria-label="Delete selected preset" disabled={!selectedPresetId} onClick={deletePreset}><Trash2 size={14}/></button></div>
         </section>}
       </div>
-      <div className="top-divider"/>
-      <div className="job-title"><strong>Duplo 616 sheet</strong><span><CheckCircle2 size={14}/> Output-proof workflow</span></div>
-      <button className="export" disabled={!outputBytes || busy || !canExport} onClick={downloadOutput}><Download size={16}/> {busy ? 'Generating…' : 'Export imposed PDF'}</button>
-      <div className="unit-switch"><button className={unit === 'mm' ? 'selected' : ''} onClick={() => setUnit('mm')}>mm</button><button className={unit === 'in' ? 'selected' : ''} onClick={() => setUnit('in')}>in</button></div>
-    </header>
+      <div className="rail-spacer"/>
+      <button className="rail-action rail-export" type="button" title="Export imposed PDF" disabled={!outputBytes || busy || !canExport} onClick={downloadOutput}><Download size={19}/><span>{busy ? 'Working' : 'Export'}</span></button>
+      <div className="rail-unit" aria-label="Measurement unit"><button className={unit === 'mm' ? 'selected' : ''} onClick={() => setUnit('mm')}>mm</button><button className={unit === 'in' ? 'selected' : ''} onClick={() => setUnit('in')}>in</button></div>
+    </nav>
 
     <section className="work redesigned-work">
-      <div className="canvas-wrap"><div className="sheet proof-sheet" style={{ aspectRatio: sheetW / sheetH }}>
+      <div className="canvas-wrap"><div className="proof-sheet-size"><span>OUTPUT SHEET</span><b>{paperPreset === '13x19' ? '13 × 19 in' : paperPreset === '12.4x18.4' ? '12.4 × 18.4 in' : 'Custom sheet'}</b><small>{display(sheetW)} × {display(sheetH)} · portrait</small></div><div className="sheet proof-sheet" style={{ aspectRatio: sheetW / sheetH }}>
         {proofImage ? <img className="proof-image" src={proofImage} alt="Generated imposed PDF proof"/> : <div className="proof-empty">{sourceFile && !geometricFit ? 'Layout does not fit this sheet' : 'Upload a PDF to generate the exact output proof'}</div>}
       </div></div>
       <footer><span className={canExport ? 'ok' : 'warn'}>{canExport ? <CheckCircle2/> : <AlertTriangle/>} {canExport ? (busy ? 'Generating output proof' : barcodeOverlap ? 'Overlap approved · preview matches export' : 'Preview matches export') : barcodeOverlap ? 'Barcode overlap needs approval' : 'Check sheet / fit'}</span><span>Finished size · {display(itemW)} × {display(itemH)}</span><span>{cols} × {rows} · {cols * rows} up</span></footer>
