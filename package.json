@@ -11,7 +11,7 @@
     "build": "vite build",
     "desktop": "npm run build && electron .",
     "desktop:pack": "npm run build && electron-builder --dir",
-    "desktop:win": "npm run build && electron-builder --win nsis"
+    "desktop:win": "npm run build && electron-builder --win nsis --publish never"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "latest",
