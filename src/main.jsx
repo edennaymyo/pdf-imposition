@@ -1,25 +1,23 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AlertTriangle, CheckCircle2, Download, FileUp, FolderOpen, Minus, Plus, Save, Settings2, Trash2, X } from 'lucide-react';
-import { degrees, PDFDocument, rgb } from 'pdf-lib';
+import { PDFDocument } from 'pdf-lib';
+import { buildJobPdf, planJob, calculateOuterBleed, inspectBarcode, extractOutputSide, finishedSize } from './pdf-engine.js';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import pdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
 import './styles.css';
 import './duplo.css';
+import { ArtworkDirection, ExportDialog, InspectorTabs, PatternPicker, SegmentedChoice } from './workspace-ui.jsx';
+import { SourceCard } from './workspace-ui.jsx';
+import './workspace-ui.css';
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 const MM_PER_POINT = 25.4 / 72;
-const POINTS_PER_MM = 72 / 25.4;
 const MIN_SHEET_MM = 210;
 const MAX_SHEET_WIDTH_MM = 330.2;
 const MAX_SHEET_HEIGHT_MM = 482.6;
-const MARK_OFFSET_MM = 3;
-const MARK_LENGTH_MM = 4;
 const OUTER_BLEED_MM = 3;
-const DUPLO_REG_INSET_MM = 5;
-const DUPLO_REG_LENGTH_MM = 5;
-const DUPLO_REG_THICKNESS_MM = 0.4;
 const BARCODE_TOP_OFFSET_MM = 4;
 const BARCODE_RIGHT_OFFSET_MM = 25;
 const BARCODE_HEIGHT_MM = 5;
@@ -29,15 +27,6 @@ const STORAGE_DB_VERSION = 1;
 const STORAGE_STORE_NAME = 'handles';
 const BARCODE_DIRECTORY_KEY = 'barcode-directory';
 const PRESET_STORAGE_KEY = 'duplo-imposition-presets-v1';
-
-const ROTATION_PATTERNS = [
-  { value: 'same', label: 'Same rotation' },
-  { value: 'alternateRows', label: 'Alternate rows 180°' },
-  { value: 'alternateColumns', label: 'Alternate columns 180°' },
-  { value: 'checkerboard', label: 'Checkerboard 180°' },
-];
-
-const SAMPLE_COLORS = ['#d95d39', '#3460d8', '#edbd37', '#5c9f70', '#a8568b', '#2b9090'];
 
 const numberValue = value => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
 
@@ -94,18 +83,18 @@ function loadStoredPresets() {
 function NumberField({ label, value, setValue, min = 0, max = 999, unit = 'mm', factor = 1, disabled = false }) {
   const shownValue = Number((numberValue(value) / factor).toFixed(unit === 'in' ? 3 : 1));
   return <label className="field"><span>{label}</span><div className="stepper">
-    <button type="button" disabled={disabled} onClick={() => setValue(Math.max(min, numberValue(value) - factor))}><Minus size={13}/></button>
+    <button type="button" aria-label={`Decrease ${label}`} disabled={disabled} onClick={() => setValue(Math.max(min, numberValue(value) - factor))}><Minus size={13}/></button>
     <input
       aria-label={label}
       value={shownValue}
       type="number"
       min={min / factor}
       max={max / factor}
-      step={unit === 'in' ? '0.001' : '0.1'}
+      step={unit === '' ? '1' : unit === 'in' ? '0.001' : '0.1'}
       disabled={disabled}
-      onChange={event => setValue(Math.max(min, Math.min(max, numberValue(event.target.value) * factor)))}
+      onChange={event => setValue(Math.max(min, Math.min(max, (unit === '' ? Math.trunc(numberValue(event.target.value)) : numberValue(event.target.value)) * factor)))}
     />
-    <button type="button" disabled={disabled} onClick={() => setValue(Math.min(max, numberValue(value) + factor))}><Plus size={13}/></button>
+    <button type="button" aria-label={`Increase ${label}`} disabled={disabled} onClick={() => setValue(Math.min(max, numberValue(value) + factor))}><Plus size={13}/></button>
     {unit && <i>{unit}</i>}
   </div></label>;
 }
@@ -130,238 +119,23 @@ async function inspectPdf(file, pageIndex = 0) {
   };
 }
 
-function sourceToOutputSides(rotation) {
-  if (rotation === 90) return { top: 'left', bottom: 'right', left: 'bottom', right: 'top' };
-  if (rotation === 180) return { top: 'bottom', bottom: 'top', left: 'right', right: 'left' };
-  if (rotation === 270) return { top: 'right', bottom: 'left', left: 'top', right: 'bottom' };
-  return { top: 'top', bottom: 'bottom', left: 'left', right: 'right' };
-}
-
-function outputBleedAvailability(meta, rotation) {
-  const mapping = sourceToOutputSides(rotation);
-  const output = { top: 0, bottom: 0, left: 0, right: 0 };
-  for (const sourceSide of Object.keys(mapping)) output[mapping[sourceSide]] = meta[sourceSide];
-  return output;
-}
-
-function cellRotation(baseRotation, rotationPattern, row, col) {
-  const flip = rotationPattern === 'alternateRows'
-    ? row % 2 === 1
-    : rotationPattern === 'alternateColumns'
-      ? col % 2 === 1
-      : rotationPattern === 'checkerboard'
-        ? (row + col) % 2 === 1
-        : false;
-  return (baseRotation + (flip ? 180 : 0)) % 360;
-}
-
-function calculateOuterBleed(meta, baseRotation, rotationPattern, rows, cols) {
-  if (!meta) return { top: OUTER_BLEED_MM, bottom: OUTER_BLEED_MM, left: OUTER_BLEED_MM, right: OUTER_BLEED_MM };
-  const outer = { top: OUTER_BLEED_MM, bottom: OUTER_BLEED_MM, left: OUTER_BLEED_MM, right: OUTER_BLEED_MM };
-  for (let row = 0; row < rows; row += 1) {
-    for (let col = 0; col < cols; col += 1) {
-      if (row !== 0 && row !== rows - 1 && col !== 0 && col !== cols - 1) continue;
-      const availability = outputBleedAvailability(meta, cellRotation(baseRotation, rotationPattern, row, col));
-      if (row === 0) outer.top = Math.min(outer.top, availability.top);
-      if (row === rows - 1) outer.bottom = Math.min(outer.bottom, availability.bottom);
-      if (col === 0) outer.left = Math.min(outer.left, availability.left);
-      if (col === cols - 1) outer.right = Math.min(outer.right, availability.right);
-    }
-  }
-  return outer;
-}
-
-function sourceBleedsForOutput(meta, rotation, desiredOutputBleed) {
-  const mapping = sourceToOutputSides(rotation);
-  return Object.fromEntries(Object.entries(mapping).map(([sourceSide, outputSide]) => [
-    sourceSide,
-    Math.min(meta[sourceSide], desiredOutputBleed[outputSide]) * POINTS_PER_MM,
-  ]));
-}
-
-function drawEmbeddedArtwork(page, embedded, trim, bleed, rotation, trimX, trimY) {
-  const width = trim.width + bleed.left + bleed.right;
-  const height = trim.height + bleed.top + bleed.bottom;
-  const options = { width, height, rotate: degrees(rotation) };
-  if (rotation === 90) {
-    page.drawPage(embedded, { ...options, x: trimX + bleed.bottom + trim.height, y: trimY - bleed.left });
-  } else if (rotation === 180) {
-    page.drawPage(embedded, { ...options, x: trimX + bleed.left + trim.width, y: trimY + bleed.bottom + trim.height });
-  } else if (rotation === 270) {
-    page.drawPage(embedded, { ...options, x: trimX - bleed.bottom, y: trimY + bleed.left + trim.width });
-  } else {
-    page.drawPage(embedded, { ...options, x: trimX - bleed.left, y: trimY - bleed.bottom });
-  }
-}
-
-function drawProductionMarks(page, geometry) {
-  const { x, y, itemWidth, itemHeight, layoutWidth, layoutHeight, cols, rows, gutterCut, gutterSlit } = geometry;
-  const gap = MARK_OFFSET_MM * POINTS_PER_MM;
-  const length = MARK_LENGTH_MM * POINTS_PER_MM;
-  const style = { thickness: 0.45, color: rgb(0, 0, 0) };
-  const line = (x1, y1, x2, y2) => page.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, ...style });
-  const top = y + layoutHeight;
-  const right = x + layoutWidth;
-
-  // Four outside corner trim marks.
-  line(x - gap - length, y, x - gap, y); line(x, y - gap - length, x, y - gap);
-  line(right + gap, y, right + gap + length, y); line(right, y - gap - length, right, y - gap);
-  line(x - gap - length, top, x - gap, top); line(x, top + gap, x, top + gap + length);
-  line(right + gap, top, right + gap + length, top); line(right, top + gap, right, top + gap + length);
-
-  // Slit marks: both finished edges of every vertical gutter, above and below the artwork group.
-  for (let col = 1; col < cols; col += 1) {
-    const leftEdge = x + col * itemWidth + (col - 1) * gutterSlit;
-    const rightEdge = leftEdge + gutterSlit;
-    const slitPositions = gutterSlit === 0 ? [leftEdge] : [leftEdge, rightEdge];
-    for (const slitX of slitPositions) {
-      line(slitX, y - gap - length, slitX, y - gap);
-      line(slitX, top + gap, slitX, top + gap + length);
-    }
-  }
-
-  // Cut marks: both finished edges of every horizontal gutter, left and right of the artwork group.
-  for (let row = 1; row < rows; row += 1) {
-    const upperBottom = top - row * itemHeight - (row - 1) * gutterCut;
-    const lowerTop = upperBottom - gutterCut;
-    const cutPositions = gutterCut === 0 ? [upperBottom] : [upperBottom, lowerTop];
-    for (const cutY of cutPositions) {
-      line(x - gap - length, cutY, x - gap, cutY);
-      line(right + gap, cutY, right + gap + length, cutY);
-    }
-  }
-}
-
-function drawDuploRegistrationMark(page) {
-  const inset = DUPLO_REG_INSET_MM * POINTS_PER_MM;
-  const length = DUPLO_REG_LENGTH_MM * POINTS_PER_MM;
-  const thickness = DUPLO_REG_THICKNESS_MM * POINTS_PER_MM;
-  const cornerX = page.getWidth() - inset;
-  const cornerY = page.getHeight() - inset;
-  const color = rgb(0, 0, 0);
-
-  // L mark bounding box stays exactly 5 mm from the sheet's top and right edges.
-  page.drawRectangle({ x: cornerX - length, y: cornerY - thickness, width: length, height: thickness, color });
-  page.drawRectangle({ x: cornerX - thickness, y: cornerY - length, width: thickness, height: length, color });
-}
-
-async function drawJobBarcode(output, outputPage, barcodeFile) {
-  if (!barcodeFile) return;
-  const barcodeDocument = await PDFDocument.load(await barcodeFile.arrayBuffer(), { updateMetadata: false });
-  const barcodePage = barcodeDocument.getPage(0);
-  const crop = barcodePage.getCropBox();
-  const targetHeight = Math.min(crop.height, BARCODE_HEIGHT_MM * POINTS_PER_MM);
-  const croppedBottom = crop.y + crop.height - targetHeight;
-  const embedded = await output.embedPage(barcodePage, {
-    left: crop.x,
-    bottom: croppedBottom,
-    right: crop.x + crop.width,
-    top: crop.y + crop.height,
-  });
-  const x = outputPage.getWidth() - BARCODE_RIGHT_OFFSET_MM * POINTS_PER_MM - crop.width;
-  const y = outputPage.getHeight() - BARCODE_TOP_OFFSET_MM * POINTS_PER_MM - targetHeight;
-  const knockoutPadding = BARCODE_KNOCKOUT_PADDING_MM * POINTS_PER_MM;
-  outputPage.drawRectangle({
-    x: x - knockoutPadding,
-    y: y - knockoutPadding,
-    width: crop.width + knockoutPadding * 2,
-    height: targetHeight + knockoutPadding * 2,
-    color: rgb(1, 1, 1),
-  });
-  outputPage.drawPage(embedded, {
-    x,
-    y,
-    width: crop.width,
-    height: targetHeight,
-  });
-}
-
-async function inspectBarcode(file) {
-  const document = await PDFDocument.load(await file.arrayBuffer(), { updateMetadata: false });
-  const crop = document.getPage(0).getCropBox();
-  return {
-    width: crop.width * MM_PER_POINT,
-    height: Math.min(crop.height * MM_PER_POINT, BARCODE_HEIGHT_MM),
-    originalHeight: crop.height * MM_PER_POINT,
-  };
-}
-
-async function buildImposedPdf(sourceFile, meta, settings) {
-  const { pageIndex, rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset, horizontalPlacement, sideTrim, marks, duploRegMark, barcodeFile } = settings;
-  const source = await PDFDocument.load(await sourceFile.arrayBuffer(), { updateMetadata: false });
-  const sourcePage = source.getPage(pageIndex);
-  const trim = sourcePage.getTrimBox();
-  const output = await PDFDocument.create();
-  const outputPage = output.addPage([sheetW * POINTS_PER_MM, sheetH * POINTS_PER_MM]);
-  const quarterTurn = rotation === 90 || rotation === 270;
-  const itemWidth = quarterTurn ? trim.height : trim.width;
-  const itemHeight = quarterTurn ? trim.width : trim.height;
-  const gutterCutPt = gutterCut * POINTS_PER_MM;
-  const gutterSlitPt = gutterSlit * POINTS_PER_MM;
-  const layoutWidth = cols * itemWidth + (cols - 1) * gutterSlitPt;
-  const layoutHeight = rows * itemHeight + (rows - 1) * gutterCutPt;
-  const outerMm = calculateOuterBleed(meta, rotation, rotationPattern, rows, cols);
-  const outer = Object.fromEntries(Object.entries(outerMm).map(([side, value]) => [side, value * POINTS_PER_MM]));
-  const footprintWidth = layoutWidth + outer.left + outer.right;
-  const layoutX = horizontalPlacement === 'manual'
-    ? outputPage.getWidth() - sideTrim * POINTS_PER_MM - layoutWidth
-    : (outputPage.getWidth() - footprintWidth) / 2 + outer.left;
-  // Top trim is measured to the first finished cut line, not to the outer bleed edge.
-  const finishedTop = outputPage.getHeight() - topOffset * POINTS_PER_MM;
-  const layoutY = finishedTop - layoutHeight;
-  const embeddedByCrop = new Map();
-
-  for (let row = 0; row < rows; row += 1) {
-    for (let col = 0; col < cols; col += 1) {
-      const actualRotation = cellRotation(rotation, rotationPattern, row, col);
-      const desiredOutputBleed = {
-        top: row === 0 ? outerMm.top : gutterCut / 2,
-        bottom: row === rows - 1 ? outerMm.bottom : gutterCut / 2,
-        left: col === 0 ? outerMm.left : gutterSlit / 2,
-        right: col === cols - 1 ? outerMm.right : gutterSlit / 2,
-      };
-      const bleed = sourceBleedsForOutput(meta, actualRotation, desiredOutputBleed);
-      const cropKey = `${bleed.top}|${bleed.bottom}|${bleed.left}|${bleed.right}`;
-      let embedded = embeddedByCrop.get(cropKey);
-      if (!embedded) {
-        embedded = await output.embedPage(sourcePage, {
-          left: trim.x - bleed.left,
-          bottom: trim.y - bleed.bottom,
-          right: trim.x + trim.width + bleed.right,
-          top: trim.y + trim.height + bleed.top,
-        });
-        embeddedByCrop.set(cropKey, embedded);
-      }
-      const trimX = layoutX + col * (itemWidth + gutterSlitPt);
-      const trimY = finishedTop - itemHeight - row * (itemHeight + gutterCutPt);
-      drawEmbeddedArtwork(outputPage, embedded, trim, bleed, actualRotation, trimX, trimY);
-    }
-  }
-
-  if (marks) {
-    drawProductionMarks(outputPage, {
-      x: layoutX, y: layoutY, itemWidth, itemHeight, layoutWidth, layoutHeight,
-      cols, rows, gutterCut: gutterCutPt, gutterSlit: gutterSlitPt,
-    });
-  }
-  if (duploRegMark) drawDuploRegistrationMark(outputPage);
-  if (barcodeFile) await drawJobBarcode(output, outputPage, barcodeFile);
-  return output.save();
-}
-
 async function renderOutputPdf(bytes) {
   const task = pdfjs.getDocument({ data: new Uint8Array(bytes) });
-  const document = await task.promise;
-  const page = await document.getPage(1);
-  const viewport = page.getViewport({ scale: 1.5 });
-  const canvas = document.createElement ? document.createElement('canvas') : window.document.createElement('canvas');
-  canvas.width = viewport.width;
-  canvas.height = viewport.height;
-  const context = canvas.getContext('2d', { alpha: false });
-  context.fillStyle = '#fff';
-  context.fillRect(0, 0, canvas.width, canvas.height);
-  await page.render({ canvasContext: context, viewport }).promise;
-  return canvas.toDataURL('image/png');
+  try {
+    const pdf = await task.promise;
+    const images = [];
+    for (let index = 1; index <= pdf.numPages; index++) {
+      const page = await pdf.getPage(index);
+      const viewport = page.getViewport({ scale: 1.5 });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      await page.render({ canvasContext: canvas.getContext('2d', { alpha: false }), viewport }).promise;
+      images.push(canvas.toDataURL('image/png'));
+      page.cleanup();
+    }
+    return images;
+  } finally { await task.destroy(); }
 }
 
 function App() {
@@ -374,10 +148,18 @@ function App() {
   const [unit, setUnit] = useState('mm');
   const [paperPreset, setPaperPreset] = useState('13x19');
   const [sourceFile, setSourceFile] = useState(null);
-  const [meta, setMeta] = useState(null);
+  const [duplex, setDuplex] = useState(false);
+  const [backInput, setBackInput] = useState('same');
+  const [backFile, setBackFile] = useState(null);
+  const [backSelectedPage, setBackSelectedPage] = useState(1);
+  const [backRotation, setBackRotation] = useState(0);
+  const [flipEdge, setFlipEdge] = useState('long');
+  const [finishingSide, setFinishingSide] = useState('front');
+  const [proofView, setProofView] = useState('both');
+  const [exportSide, setExportSide] = useState('both');
+  const [inspection, setInspection] = useState(null);
+  const [proof, setProof] = useState(null);
   const [selectedPage, setSelectedPage] = useState(0);
-  const [proofImage, setProofImage] = useState(null);
-  const [outputBytes, setOutputBytes] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [sheetW, setSheetW] = useState(330.2);
@@ -387,13 +169,15 @@ function App() {
   const [topOffset, setTopOffset] = useState(10);
   const [horizontalPlacement, setHorizontalPlacement] = useState('center');
   const [sideTrim, setSideTrim] = useState(10);
-  const [inspectorTab, setInspectorTab] = useState('layout');
+  const [inspectorTab, setInspectorTab] = useState('artwork');
+  const [editingSide, setEditingSide] = useState('front');
+  const [exportOpen, setExportOpen] = useState(false);
+  const [barcodeOpen, setBarcodeOpen] = useState(false);
+  const inspectorScroll = useRef(null);
   const [barcodeDirectoryHandle, setBarcodeDirectoryHandle] = useState(null);
   const [barcodeEntries, setBarcodeEntries] = useState([]);
   const [barcodeFile, setBarcodeFile] = useState(null);
-  const [barcodeMeta, setBarcodeMeta] = useState(null);
   const [barcodeName, setBarcodeName] = useState('');
-  const [allowBarcodeOverlap, setAllowBarcodeOverlap] = useState(false);
   const [barcodeFolderStatus, setBarcodeFolderStatus] = useState('Choose the barcode PDF folder once');
   const [presetName, setPresetName] = useState('');
   const [savedPresets, setSavedPresets] = useState(loadStoredPresets);
@@ -402,30 +186,76 @@ function App() {
 
   const factor = unit === 'in' ? 25.4 : 1;
   const display = value => unit === 'in' ? `${(value / 25.4).toFixed(3)} in` : `${Number(value).toFixed(1)} mm`;
-  const quarterTurn = rotation === 90 || rotation === 270;
-  const itemW = meta ? (quarterTurn ? meta.height : meta.width) : 63.5;
-  const itemH = meta ? (quarterTurn ? meta.width : meta.height) : 88.9;
+  const effectiveBackFile = backInput === 'same' ? sourceFile : backFile;
+  const inspectionRequest = useMemo(() => ({ sourceFile, selectedPage, duplex, effectiveBackFile, backSelectedPage }),
+    [sourceFile, selectedPage, duplex, effectiveBackFile, backSelectedPage]);
+  const meta = inspection?.request === inspectionRequest ? inspection.front : null;
+  const backMeta = inspection?.request === inspectionRequest ? inspection.back : null;
+  const inspectionError = inspection?.request === inspectionRequest ? inspection.error : '';
+  const settings = useMemo(() => ({
+    rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset,
+    horizontalPlacement, sideTrim, marks, duploRegMark, barcodeFile,
+    duplex, backRotation, flipEdge, finishingSide,
+  }), [rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset,
+    horizontalPlacement, sideTrim, marks, duploRegMark, barcodeFile, duplex, backRotation, flipEdge, finishingSide]);
+  const planned = useMemo(() => {
+    try { return { plan: planJob(meta, backMeta, settings), error: '' }; }
+    catch (failure) { return { plan: null, error: failure.message }; }
+  }, [meta, backMeta, settings]);
+  const plan = planned.plan;
+  const frontGeometry = plan?.sides[0];
+  const itemW = meta ? finishedSize(meta, rotation).width : 63.5;
+  const itemH = meta ? finishedSize(meta, rotation).height : 88.9;
   const layoutW = cols * itemW + (cols - 1) * gutterSlit;
   const layoutH = rows * itemH + (rows - 1) * gutterCut;
-  const appliedOuterBleed = calculateOuterBleed(meta, rotation, rotationPattern, rows, cols);
-  const outerBleedShortfall = meta && Object.values(appliedOuterBleed).some(value => value < OUTER_BLEED_MM - 0.01);
-  const footprintW = layoutW + appliedOuterBleed.left + appliedOuterBleed.right;
-  const footprintH = layoutH + appliedOuterBleed.top + appliedOuterBleed.bottom;
-  const validSheet = sheetW >= MIN_SHEET_MM && sheetH >= MIN_SHEET_MM && sheetW <= MAX_SHEET_WIDTH_MM && sheetH <= MAX_SHEET_HEIGHT_MM;
-  const layoutLeft = horizontalPlacement === 'manual'
-    ? sheetW - sideTrim - layoutW
-    : (sheetW - footprintW) / 2 + appliedOuterBleed.left;
-  const artworkLeft = layoutLeft - appliedOuterBleed.left;
-  const artworkRight = layoutLeft + layoutW + appliedOuterBleed.right;
+  const appliedOuterBleed = frontGeometry?.outer || calculateOuterBleed(meta, rotation, rotationPattern, rows, cols);
+  const outerBleedShortfall = plan?.sides.some(side => Object.values(side.outer).some(value => value < OUTER_BLEED_MM - 0.01));
+  const layoutLeft = frontGeometry?.x ?? (sheetW - layoutW) / 2;
   const calculatedSideTrim = sheetW - layoutLeft - layoutW;
-  const artworkTop = topOffset - appliedOuterBleed.top;
-  const barcodeLeft = barcodeMeta ? sheetW - BARCODE_RIGHT_OFFSET_MM - barcodeMeta.width - BARCODE_KNOCKOUT_PADDING_MM : 0;
-  const barcodeRight = sheetW - BARCODE_RIGHT_OFFSET_MM + BARCODE_KNOCKOUT_PADDING_MM;
-  const barcodeBottom = barcodeMeta ? BARCODE_TOP_OFFSET_MM + barcodeMeta.height + BARCODE_KNOCKOUT_PADDING_MM : 0;
-  const barcodeOverlap = Boolean(barcodeMeta && barcodeName && barcodeRight > artworkLeft && barcodeLeft < artworkRight && barcodeBottom > artworkTop);
-  const geometricFit = validSheet && artworkLeft >= 0 && artworkRight <= sheetW && topOffset >= appliedOuterBleed.top && topOffset + layoutH + appliedOuterBleed.bottom <= sheetH;
-  const canExport = geometricFit && (!barcodeOverlap || allowBarcodeOverlap);
-  const settings = useMemo(() => ({ pageIndex: selectedPage, rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset, horizontalPlacement, sideTrim, marks, duploRegMark, barcodeFile }), [selectedPage, rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset, horizontalPlacement, sideTrim, marks, duploRegMark, barcodeFile]);
+  const geometricFit = Boolean(plan?.fits);
+  const canExport = geometricFit && (!barcodeName || Boolean(barcodeFile));
+  const proofRequest = useMemo(() => ({ inspectionRequest, meta, backMeta, settings }), [inspectionRequest, meta, backMeta, settings]);
+  const outputBytes = proof?.request === proofRequest ? proof.bytes : null;
+  const proofImages = proof?.request === proofRequest ? proof.images : [];
+  const processing = busy || Boolean(sourceFile && inspection?.request !== inspectionRequest);
+  const statusError = error || inspectionError || (sourceFile && !processing ? planned.error : '');
+  const shownSides = duplex ? (proofView === 'both' ? ['front', 'back'] : [proofView]) : ['front'];
+  const exportReady = Boolean(outputBytes && !processing && canExport);
+  const barcodeNeedsAttention = Boolean(barcodeName && !barcodeFile);
+  const sheetLabel = paperPreset === '13x19' ? '13 × 19 in' : paperPreset === '12.4x18.4' ? '12.4 × 18.4 in' : `${display(sheetW)} × ${display(sheetH)}`;
+  const backSize = backMeta ? finishedSize(backMeta, backRotation) : null;
+  const sizesMatch = Boolean(meta && (!duplex || (backSize && Math.abs(itemW - backSize.width) <= 0.01 && Math.abs(itemH - backSize.height) <= 0.01)));
+  const issueText = statusError || (barcodeNeedsAttention ? 'Reconnect the selected barcode file.' : sourceFile && !processing && !geometricFit ? 'This layout does not fit. Review sheet size and repeat count.' : '');
+  const issueTab = barcodeNeedsAttention ? 'duplo' : !meta || (duplex && !sizesMatch) || inspectionError ? 'artwork' : 'layout';
+  const changeInspectorTab = tab => { setInspectorTab(tab); inspectorScroll.current?.scrollTo({ top: 0 }); };
+  const reviewIssue = () => {
+    changeInspectorTab(!sourceFile ? 'artwork' : issueTab);
+    if (issueTab === 'duplo') setBarcodeOpen(true);
+    if (issueTab === 'artwork') setEditingSide(duplex && meta ? 'back' : 'front');
+    requestAnimationFrame(() => {
+      const target = document.getElementById(issueTab === 'duplo' ? 'barcode-details' : `panel-${!sourceFile ? 'artwork' : issueTab}`);
+      target?.scrollIntoView({ block: 'nearest' });
+      target?.querySelector('select, input, button')?.focus();
+    });
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!sourceFile) { setInspection(null); return; }
+    const inspect = async () => {
+      try {
+        const [front, back] = await Promise.all([
+          inspectPdf(sourceFile, selectedPage),
+          duplex && effectiveBackFile ? inspectPdf(effectiveBackFile, backSelectedPage) : Promise.resolve(null),
+        ]);
+        if (!cancelled) setInspection({ request: inspectionRequest, front, back, error: '' });
+      } catch (failure) {
+        if (!cancelled) setInspection({ request: inspectionRequest, front: null, back: null, error: `PDF inspection failed: ${failure.message}` });
+      }
+    };
+    inspect();
+    return () => { cancelled = true; };
+  }, [inspectionRequest]);
 
   useEffect(() => {
     let cancelled = false;
@@ -454,62 +284,52 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
-    if (!sourceFile || !meta || !geometricFit) {
-      setOutputBytes(null);
-      setProofImage(null);
+    setProof(null);
+    if (!sourceFile || !meta || !geometricFit || (duplex && !backMeta)) {
+      setBusy(false);
       return () => { cancelled = true; };
     }
-    const generate = async () => {
-      setBusy(true);
+    setBusy(true);
+    // Debounce stepper changes; never leave a stale proof exportable while recomputing.
+    const timer = setTimeout(async () => {
       try {
-        const bytes = await buildImposedPdf(sourceFile, meta, settings);
-        const image = await renderOutputPdf(bytes);
-        if (!cancelled) {
-          setOutputBytes(bytes);
-          setProofImage(image);
-          setError('');
-        }
-      } catch (generationError) {
-        if (!cancelled) {
-          setOutputBytes(null);
-          setProofImage(null);
-          setError(`Preview generation failed: ${generationError.message}`);
-        }
+        const bytes = await buildJobPdf(
+          { file: sourceFile, meta, pageIndex: meta.pageIndex },
+          duplex ? { file: effectiveBackFile, meta: backMeta, pageIndex: backMeta.pageIndex } : null,
+          settings,
+        );
+        if (cancelled) return;
+        const images = await renderOutputPdf(bytes);
+        if (!cancelled) { setProof({ request: proofRequest, bytes, images }); setError(''); }
+      } catch (failure) {
+        if (!cancelled) setError(`Preview generation failed: ${failure.message}`);
       } finally {
         if (!cancelled) setBusy(false);
       }
-    };
-    generate();
-    return () => { cancelled = true; };
-  }, [sourceFile, meta, geometricFit, settings]);
+    }, 120);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [proofRequest, geometricFit]);
 
-  useEffect(() => {
-    setAllowBarcodeOverlap(false);
-  }, [barcodeName, sheetW, sheetH, topOffset, horizontalPlacement, sideTrim, cols, rows, gutterCut, gutterSlit, rotation, rotationPattern, selectedPage]);
 
   const setBarcodeFromEntry = async (name, entries = barcodeEntries) => {
     setBarcodeName(name);
     if (!name) {
       setBarcodeFile(null);
-      setBarcodeMeta(null);
       return;
     }
     const entry = entries.find(item => item.name === name);
     if (!entry) {
       setBarcodeFile(null);
-      setBarcodeMeta(null);
       setError(`Barcode ${name} is not available. Reconnect its folder.`);
       return;
     }
     try {
       const file = entry.file || await entry.handle.getFile();
-      const dimensions = await inspectBarcode(file);
+      await inspectBarcode(file);
       setBarcodeFile(file);
-      setBarcodeMeta(dimensions);
       setError('');
     } catch (barcodeError) {
       setBarcodeFile(null);
-      setBarcodeMeta(null);
       setError(`Barcode PDF could not be read: ${barcodeError.message}`);
     }
   };
@@ -555,6 +375,8 @@ function App() {
       name: cleanName,
       paperPreset, sheetW, sheetH, rotation, rotationPattern, cols, rows, gutterCut, gutterSlit,
       topTrim: topOffset, horizontalPlacement, sideTrim, marks, duploRegMark, barcodeName,
+      duplex, backInput, backRotation, flipEdge, finishingSide,
+      frontPage: meta?.pageIndex ?? selectedPage, backPage: backMeta?.pageIndex ?? backSelectedPage,
     };
     const next = existing ? savedPresets.map(item => item.id === existing.id ? preset : item) : [...savedPresets, preset];
     setSavedPresets(next);
@@ -571,6 +393,9 @@ function App() {
     setRotation(preset.rotation); setRotationPattern(preset.rotationPattern || 'same'); setCols(preset.cols); setRows(preset.rows);
     setGutterCut(preset.gutterCut); setGutterSlit(preset.gutterSlit);
     setTopOffset(preset.topTrim); setHorizontalPlacement(preset.horizontalPlacement || 'center'); setSideTrim(preset.sideTrim ?? 10); setMarks(preset.marks); setDuploRegMark(preset.duploRegMark);
+    setDuplex(Boolean(preset.duplex)); setBackInput(preset.backInput || 'same');
+    setSelectedPage(preset.frontPage ?? 0); setBackSelectedPage(preset.backPage ?? 1);
+    setBackRotation(preset.backRotation ?? 0); setFlipEdge(preset.flipEdge || 'long'); setFinishingSide(preset.finishingSide || 'front');
     setPresetName(preset.name);
     await setBarcodeFromEntry(preset.barcodeName || '');
   };
@@ -589,58 +414,44 @@ function App() {
     if (preset === '12.4x18.4') { setSheetW(315); setSheetH(467.4); }
   };
 
-  const upload = async event => {
+  const clearFront = () => {
+    setSourceFile(null); setSelectedPage(0); setProof(null); setError('');
+  };
+  const newJob = () => {
+    clearFront(); setBackFile(null); setBackSelectedPage(1); setInspection(null);
+    setEditingSide('front'); changeInspectorTab('artwork'); setExportOpen(false);
+  };
+  const upload = event => {
     const file = event.target.files?.[0];
+    event.target.value = '';
     if (!file) return;
-    setError('');
-    setBusy(true);
-    try {
-      const inspected = await inspectPdf(file, 0);
-      setSelectedPage(0);
-      setSourceFile(file);
-      setMeta(inspected);
-    } catch (uploadError) {
-      setSourceFile(null);
-      setMeta(null);
-      setSelectedPage(0);
-      setError(`PDF size / TrimBox / BleedBox ကိုမဖတ်နိုင်ပါ။ ${uploadError.message}`);
-    } finally {
-      setBusy(false);
-    }
+    setSourceFile(file); setSelectedPage(0); setError('');
   };
-
-  const selectPdfPage = async event => {
-    if (!sourceFile) return;
-    const nextPage = Number(event.target.value);
-    setBusy(true);
-    setOutputBytes(null);
-    setProofImage(null);
-    setError('');
-    try {
-      const inspected = await inspectPdf(sourceFile, nextPage);
-      setSelectedPage(inspected.pageIndex);
-      setMeta(inspected);
-    } catch (pageError) {
-      setError(`PDF page ${nextPage + 1} ကိုမဖတ်နိုင်ပါ။ ${pageError.message}`);
-    } finally {
-      setBusy(false);
-    }
+  const uploadBack = event => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setBackFile(file); setBackSelectedPage(0); setError('');
   };
-
-  const downloadOutput = () => {
-    if (!outputBytes) return;
-    const url = URL.createObjectURL(new Blob([outputBytes], { type: 'application/pdf' }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'duplo-616-imposed.pdf';
-    link.click();
-    URL.revokeObjectURL(url);
+  const downloadOutput = async () => {
+    if (!outputBytes || processing || !canExport) return;
+    try {
+      const side = duplex ? exportSide : 'front';
+      const bytes = duplex && side !== 'both' ? await extractOutputSide(outputBytes, side === 'front' ? 0 : 1) : outputBytes;
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = duplex ? `duplo-616-${side === 'both' ? 'front-back' : side}.pdf` : 'duplo-616-imposed.pdf';
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      setExportOpen(false);
+    } catch (failure) { setError(`Export failed: ${failure.message}`); }
   };
 
   return <main className="app app-redesign">
     <nav className="utility-rail" aria-label="Job actions">
       <div className="rail-brand" aria-label="Repeat PDF Imposition"><span className="brand-mark">R</span></div>
-      <button className="rail-action" type="button" title="New Job" onClick={() => { setSourceFile(null); setMeta(null); setSelectedPage(0); setProofImage(null); setOutputBytes(null); setError(''); }}><Plus size={18}/><span>New</span></button>
+      <button className="rail-action" type="button" title="New Job" onClick={newJob}><Plus size={18}/><span>New</span></button>
       <div className="preset-menu-wrap">
         <button className="rail-action" type="button" title="Presets" aria-expanded={presetsOpen} aria-controls="preset-menu" onClick={() => setPresetsOpen(open => !open)}><Settings2 size={18}/><span>Presets</span></button>
         {presetsOpen && <section id="preset-menu" className="preset-menu" aria-label="Saved presets">
@@ -651,44 +462,67 @@ function App() {
         </section>}
       </div>
       <div className="rail-spacer"/>
-      <button className="rail-action rail-export" type="button" title="Export imposed PDF" disabled={!outputBytes || busy || !canExport} onClick={downloadOutput}><Download size={19}/><span>{busy ? 'Working' : 'Export'}</span></button>
+      <button className="rail-action rail-export" type="button" title="Export imposed PDF" disabled={!exportReady} onClick={() => setExportOpen(true)}><Download size={19}/><span>{processing ? 'Working' : 'Export'}</span></button>
       <div className="rail-unit" aria-label="Measurement unit"><button className={unit === 'mm' ? 'selected' : ''} onClick={() => setUnit('mm')}>mm</button><button className={unit === 'in' ? 'selected' : ''} onClick={() => setUnit('in')}>in</button></div>
     </nav>
 
     <section className="work redesigned-work">
-      <div className="canvas-wrap"><div className="proof-sheet-size"><span>OUTPUT SHEET</span><b>{paperPreset === '13x19' ? '13 × 19 in' : paperPreset === '12.4x18.4' ? '12.4 × 18.4 in' : 'Custom sheet'}</b><small>{display(sheetW)} × {display(sheetH)} · portrait</small></div><div className="sheet proof-sheet" style={{ aspectRatio: sheetW / sheetH }}>
-        {proofImage ? <img className="proof-image" src={proofImage} alt="Generated imposed PDF proof"/> : <div className="proof-empty">{sourceFile && !geometricFit ? 'Layout does not fit this sheet' : 'Upload a PDF to generate the exact output proof'}</div>}
-      </div></div>
-      <footer><span className={canExport ? 'ok' : 'warn'}>{canExport ? <CheckCircle2/> : <AlertTriangle/>} {canExport ? (busy ? 'Generating output proof' : barcodeOverlap ? 'Overlap approved · preview matches export' : 'Preview matches export') : barcodeOverlap ? 'Barcode overlap needs approval' : 'Check sheet / fit'}</span><span>Finished size · {display(itemW)} × {display(itemH)}</span><span>{cols} × {rows} · {cols * rows} up</span></footer>
+      <div className="proof-toolbar">
+        <div><b>{paperPreset === '13x19' ? '13 × 19 in' : paperPreset === '12.4x18.4' ? '12.4 × 18.4 in' : 'Custom sheet'}</b><span>{display(sheetW)} × {display(sheetH)} · portrait</span></div>
+        {duplex && <div className="view-switch" aria-label="Proof view">{['front', 'back', 'both'].map(view => <button key={view} aria-pressed={proofView === view} onClick={() => setProofView(view)}>{view === 'both' ? 'Both' : view === 'front' ? 'Front' : 'Back'}</button>)}</div>}
+      </div>
+      <div className={`canvas-wrap duplex-canvas ${shownSides.length === 2 ? 'two-proofs' : ''}`} aria-busy={processing}>
+        {shownSides.map(side => <figure className="proof-panel" key={side}>
+          <figcaption>{side === 'front' ? 'Front' : 'Back'}<small>Output proof</small></figcaption>
+          <div className="proof-frame"><div className="sheet proof-sheet" style={{ aspectRatio: sheetW / sheetH, '--sheet-ratio': sheetW / sheetH }}>
+            {proofImages[side === 'front' ? 0 : 1] ? <img className="proof-image" src={proofImages[side === 'front' ? 0 : 1]} alt={`${side === 'front' ? 'Front' : 'Back'} exported PDF proof`}/> : <div className="proof-empty">{processing ? 'Generating output proof…' : statusError || (sourceFile && !geometricFit ? 'Front or Back layout does not fit this sheet' : 'Upload a PDF to generate the exact output proof')}</div>}
+          </div></div>
+        </figure>)}
+      </div>
+      <footer><button type="button" className={`proof-status ${exportReady ? 'ok' : 'warn'}`} disabled={exportReady || processing} onClick={reviewIssue}>{exportReady ? <CheckCircle2/> : <AlertTriangle/>} {processing ? 'Updating proof…' : !sourceFile ? 'Choose artwork →' : barcodeNeedsAttention ? 'Review barcode →' : !outputBytes ? 'Review artwork / layout →' : 'Preview matches export'}</button><span>Finished · {display(itemW)} × {display(itemH)}</span><span>{cols} × {rows} · {cols * rows} up{duplex ? ' / side' : ''}</span></footer>
     </section>
 
     <aside className="inspector redesigned-inspector">
-      <section className="artwork-panel">
-        <h1>Artwork</h1>
-        <section className="upload compact-upload"><input id="upload" type="file" accept="application/pdf" onChange={upload}/><label htmlFor="upload"><FileUp size={17}/><b>{sourceFile ? 'Replace PDF' : 'Upload PDF'}</b></label>{sourceFile && <button className="clear" onClick={() => { setSourceFile(null); setMeta(null); setSelectedPage(0); setProofImage(null); setOutputBytes(null); setError(''); }}><X size={14}/> Remove</button>}</section>
-        {error && <p className="error">{error}</p>}
-        {meta ? <div className="detected compact-detected"><CheckCircle2/><div><b>PDF inspected · {meta.pages} {meta.pages === 1 ? 'page' : 'pages'}</b><span>Trim {display(meta.width)} × {display(meta.height)} · Bleed T {display(meta.top)}, B {display(meta.bottom)}, L {display(meta.left)}, R {display(meta.right)}</span></div></div> : <p className="empty-meta">TrimBox and BleedBox are read automatically</p>}
-        {meta?.pages > 1 && <label className="select compact-select"><span>Page</span><select aria-label="Artwork page" value={selectedPage} onChange={selectPdfPage} disabled={busy}>{Array.from({ length: meta.pages }, (_, index) => <option key={index} value={index}>Page {index + 1} / {meta.pages}</option>)}</select></label>}
-        <div className="control-label">Base rotation</div>
-        <div className="rotation segmented">{[0, 90, 180, 270].map(angle => <button key={angle} className={rotation === angle ? 'selected' : ''} onClick={() => setRotation(angle)}>{angle}°</button>)}</div>
-        <label className="select rotation-pattern compact-select"><span>Repeat pattern</span><select aria-label="180 degree repeat pattern" value={rotationPattern} onChange={event => setRotationPattern(event.target.value)}>{ROTATION_PATTERNS.map(pattern => <option key={pattern.value} value={pattern.value}>{pattern.label}</option>)}</select></label>
+      <InspectorTabs value={inspectorTab} onChange={changeInspectorTab}/>
+      {issueText && !processing && <div className="inspector-issue" role="alert"><AlertTriangle size={16}/><div><p>{issueText}</p><button type="button" onClick={reviewIssue}>Review {issueTab === 'duplo' ? 'barcode' : issueTab} →</button></div></div>}
+      <div className="inspector-body" ref={inspectorScroll}>
+      <section className="artwork-panel" role="tabpanel" id="panel-artwork" aria-labelledby="tab-artwork" hidden={inspectorTab !== 'artwork'}>
+        <div className="panel-heading"><span className="eyebrow">01 / SOURCE</span><h1>Choose your artwork</h1><p className="section-intro">Set each side’s PDF page and direction here.</p></div>
+        <SegmentedChoice label="Printed sides" name="Job mode" value={duplex ? 'duplex' : 'single'} options={[{ value: 'single', label: 'Single side' }, { value: 'duplex', label: 'Double side' }]} onChange={value => { setDuplex(value === 'duplex'); setEditingSide('front'); setError(''); }}/>
+        <SourceCard side="Front" expanded={editingSide === 'front'} onToggle={() => setEditingSide(editingSide === 'front' ? '' : 'front')} fileName={sourceFile?.name} pageIndex={meta?.pageIndex ?? selectedPage} angle={rotation} dimensions={meta ? `${display(itemW)} × ${display(itemH)}` : ''}>
+          <section className="upload compact-upload"><input id="upload" aria-label="Upload front PDF" type="file" accept="application/pdf" onChange={upload}/><label htmlFor="upload"><FileUp size={17}/><b>{sourceFile ? 'Replace PDF' : 'Upload PDF'}</b></label>{sourceFile && <button className="clear" onClick={clearFront}><X size={14}/> Remove</button>}</section>
+          {meta && <label className="select compact-select"><span>Source PDF page</span><select aria-label="Front page" value={meta.pageIndex} onChange={event => { setSelectedPage(Number(event.target.value)); setError(''); }}>{Array.from({ length: meta.pages }, (_, index) => <option key={index} value={index}>PDF page {index + 1} of {meta.pages}</option>)}</select></label>}
+          <ArtworkDirection side="Front" value={rotation} onChange={setRotation}/>
+        </SourceCard>
+        {duplex && <SourceCard side="Back" expanded={editingSide === 'back'} onToggle={() => setEditingSide(editingSide === 'back' ? '' : 'back')} fileName={effectiveBackFile?.name} pageIndex={backMeta?.pageIndex ?? backSelectedPage} angle={backRotation} dimensions={backSize ? `${display(backSize.width)} × ${display(backSize.height)}` : ''}>
+          <SegmentedChoice label="Back source" value={backInput} options={[{ value: 'same', label: 'Same PDF' }, { value: 'separate', label: 'Separate PDF' }]} onChange={value => { setBackInput(value); setBackSelectedPage(value === 'same' ? 1 : 0); setError(''); }}/>
+          {backInput === 'separate' && <><section className="upload compact-upload"><input id="upload-back" aria-label="Upload back PDF" type="file" accept="application/pdf" onChange={uploadBack}/><label htmlFor="upload-back"><FileUp size={17}/><b>{backFile ? 'Replace back PDF' : 'Upload back PDF'}</b></label>{backFile && <button className="clear" onClick={() => { setBackFile(null); setError(''); }}><X size={14}/> Remove</button>}</section>{backFile && <p className="source-name" title={backFile.name}>{backFile.name}</p>}</>}
+          {backMeta && <label className="select compact-select"><span>Source PDF page</span><select aria-label="Back page" value={backMeta.pageIndex} onChange={event => { setBackSelectedPage(Number(event.target.value)); setError(''); }}>{Array.from({ length: backMeta.pages }, (_, index) => <option key={index} value={index}>PDF page {index + 1} of {backMeta.pages}</option>)}</select></label>}
+          {backInput === 'same' && meta?.pages === 1 && <p className="hint">This PDF has one page. Both sides use Page 1; upload a separate back if needed.</p>}
+          <ArtworkDirection side="Back" value={backRotation} onChange={setBackRotation}/>
+        </SourceCard>}
+        {meta && sizesMatch && <div className="source-check"><CheckCircle2 size={16}/><span>{duplex ? 'Finished sizes match' : 'Finished size detected'}<small>{display(itemW)} × {display(itemH)} · no scaling</small></span></div>}
+        <div className="panel-next"><span>Ready to arrange the sheet?</span><button type="button" onClick={() => changeInspectorTab('layout')}>Sheet & grid layout →</button></div>
       </section>
-
-      <div className="inspector-tabs" role="tablist" aria-label="Inspector settings">
-        <button role="tab" aria-selected={inspectorTab === 'layout'} className={inspectorTab === 'layout' ? 'selected' : ''} onClick={() => setInspectorTab('layout')}>Layout</button>
-        <button role="tab" aria-selected={inspectorTab === 'duplo'} className={inspectorTab === 'duplo' ? 'selected' : ''} onClick={() => setInspectorTab('duplo')}>Duplo</button>
-      </div>
-
-      {inspectorTab === 'layout' ? <div className="tab-panel" role="tabpanel">
+      <div className="tab-panel" role="tabpanel" id="panel-layout" aria-labelledby="tab-layout" hidden={inspectorTab !== 'layout'}>
+        <div className="panel-heading"><span className="eyebrow">02 / ARRANGE</span><h1>Build the sheet</h1></div>
         <section><h2>Sheet & repeat</h2><label className="select"><span>Paper size</span><select aria-label="Sheet preset" value={paperPreset} onChange={event => selectPaper(event.target.value)}><option value="13x19">13 × 19 in</option><option value="12.4x18.4">12.4 × 18.4 in</option><option value="custom">Custom size</option></select></label>{paperPreset === 'custom' && <div className="two"><NumberField label="Sheet width" value={sheetW} setValue={setSheetW} min={MIN_SHEET_MM} max={MAX_SHEET_WIDTH_MM} unit={unit} factor={factor}/><NumberField label="Sheet length" value={sheetH} setValue={setSheetH} min={MIN_SHEET_MM} max={MAX_SHEET_HEIGHT_MM} unit={unit} factor={factor}/></div>}<div className="two"><NumberField label="Columns" value={cols} setValue={setCols} min={1} max={25} unit=""/><NumberField label="Rows" value={rows} setValue={setRows} min={1} max={25} unit=""/></div><div className="layout-total"><span>Total up</span><b>{cols * rows}</b></div></section>
-        <section className="compact-summary"><h2>Output size</h2><div className="summary-grid"><span>Finished item<b>{display(itemW)} × {display(itemH)}</b></span><span>Layout<b>{display(layoutW)} × {display(layoutH)}</b></span><span>Outer bleed<b>T {display(appliedOuterBleed.top)} · B {display(appliedOuterBleed.bottom)} · L {display(appliedOuterBleed.left)} · R {display(appliedOuterBleed.right)}</b></span></div>{outerBleedShortfall && <p className="error">Common outer bleed is reduced to the least source bleed available across rotated edge cells.</p>}</section>
-      </div> : <div className="tab-panel" role="tabpanel">
-        <section><h2>Duplo finishing</h2><div className="two"><NumberField label="Lead Trim" value={topOffset} setValue={setTopOffset} max={100} unit={unit} factor={factor}/><NumberField label="Side Trim" value={calculatedSideTrim} setValue={setSideTrim} max={100} unit={unit} factor={factor} disabled={horizontalPlacement === 'center'}/></div><label className="placement-toggle"><span>Horizontal placement</span><select aria-label="Horizontal placement" value={horizontalPlacement} onChange={event => { const mode = event.target.value; if (mode === 'manual') setSideTrim(calculatedSideTrim); setHorizontalPlacement(mode); }}><option value="center">Centered · auto Side Trim</option><option value="manual">Manual Side Trim</option></select></label><div className="two"><NumberField label="Gutter Cut" value={gutterCut} setValue={setGutterCut} unit={unit} factor={factor}/><NumberField label="Gutter Slit" value={gutterSlit} setValue={setGutterSlit} unit={unit} factor={factor}/></div><p className="hint">Lead Trim is measured from the sheet top to the first finished cut line. Side Trim is measured from the sheet right edge to the first finished slit line.</p></section>
-        <section className="switches"><label className="toggle-row"><span>Production trim marks</span><input type="checkbox" checked={marks} onChange={event => setMarks(event.target.checked)}/></label><label className="toggle-row"><span>Duplo registration mark</span><input type="checkbox" checked={duploRegMark} onChange={event => setDuploRegMark(event.target.checked)}/></label></section>
-        <details className="advanced"><summary>Job barcode</summary><div className="details-body"><div className="barcode-actions"><button type="button" className="secondary" onClick={connectBarcodeDirectory}><FolderOpen size={14}/> {barcodeDirectoryHandle ? 'Reconnect folder' : 'Choose barcode folder'}</button><span className="barcode-status">{barcodeFolderStatus}</span></div><label className="session-loader"><input className="barcode-file-input" type="file" accept="application/pdf" multiple webkitdirectory="" onChange={loadBarcodeFilesForSession}/><span>Load folder for this session</span></label><label className="select"><span>Job barcode</span><select aria-label="Job barcode" value={barcodeName} onChange={event => setBarcodeFromEntry(event.target.value)}><option value="">No barcode</option>{barcodeEntries.map(entry => <option key={entry.name} value={entry.name}>{entry.name.replace(/\.pdf$/i, '')}</option>)}</select></label><div className="calculation barcode-spec"><span>Bottom crop · white knockout · top layer</span><b>{display(BARCODE_HEIGHT_MM)} high · top {display(BARCODE_TOP_OFFSET_MM)} · right {display(BARCODE_RIGHT_OFFSET_MM)}</b></div>{barcodeOverlap && <div className="overlap-approval"><p><AlertTriangle size={14}/> Barcode overlaps the imposed artwork.</p><label className="toggle-row"><span>Allow barcode over artwork</span><input type="checkbox" checked={allowBarcodeOverlap} onChange={event => setAllowBarcodeOverlap(event.target.checked)}/></label></div>}</div></details>
-        <div className={canExport ? 'summary compact-check' : 'summary warning compact-check'}><span>DC-616 CHECK</span><b>{canExport ? barcodeOverlap ? 'Barcode overlap approved' : 'Sheet & layout fit' : barcodeOverlap ? 'Approve barcode overlap to export' : 'Layout exceeds usable sheet area'}</b><small>Lead {display(topOffset)} · Side {display(calculatedSideTrim)} · Cut {display(gutterCut)} · Slit {display(gutterSlit)}</small></div>
-      </div>}
+        <section><PatternPicker value={rotationPattern} onChange={setRotationPattern} duplex={duplex}/></section>
+        {duplex && <section><h2>Two-sided printing</h2><SegmentedChoice label="Sheet turn" name="Sheet flip" value={flipEdge} options={[{ value: 'long', label: 'Long edge' }, { value: 'short', label: 'Short edge' }]} onChange={setFlipEdge}/><p className="section-intro">{flipEdge === 'long' ? 'Turn left / right.' : 'Turn top / bottom.'} Turns the sheet, not the artwork. Match your printer’s duplex setting.</p><details className="inline-help"><summary>Alignment & test-print guidance</summary><p className="hint">Print one test sheet at 100% before production. Manual refeeding depends on the printer. Back cut positions follow Front; artwork text is never mirrored.</p>{plan?.sides[1] && <div className="calculation"><span>Back placement · automatic</span><b>Top {display(plan.sides[1].y)} · Right {display(sheetW - plan.sides[1].x - layoutW)}</b></div>}</details></section>}
+        <details className="advanced output-details"><summary>Output size & bleed</summary><div className="details-body"><div className="summary-grid"><span>Finished item<b>{display(itemW)} × {display(itemH)}</b></span><span>Layout<b>{display(layoutW)} × {display(layoutH)}</b></span><span>Outer bleed<b>T {display(appliedOuterBleed.top)} · B {display(appliedOuterBleed.bottom)} · L {display(appliedOuterBleed.left)} · R {display(appliedOuterBleed.right)}</b></span></div>{duplex && plan?.sides[1] && <p className="hint">Back outer bleed: {Object.entries(plan.sides[1].outer).map(([side, value]) => `${side} ${display(value)}`).join(' · ')}</p>}</div></details>
+        {(outerBleedShortfall || plan?.sides.some(side => !side.marksOnSheet)) && <div className="layout-advisory">{outerBleedShortfall && <p>Some source bleed is below 3 mm. Available bleed is used without stretching.</p>}{plan?.sides.some(side => !side.marksOnSheet) && <p>Some trim marks fall outside the sheet. Increase margins for full marks.</p>}</div>}
+      </div>
+      <div className="tab-panel" role="tabpanel" id="panel-duplo" aria-labelledby="tab-duplo" hidden={inspectorTab !== 'duplo'}>
+        <div className="panel-heading"><span className="eyebrow">03 / FINISH</span><h1>Duplo setup</h1></div>
+        {barcodeFile && marks && <p className="hint barcode-mark-notice">Barcode on: top-right corner trim marks hidden {duplex ? finishingSide === 'both' ? 'on both sides' : `on the ${finishingSide}` : 'on this sheet'}. Select No barcode to restore them. Registration mark is unchanged.</p>}
+        <section><h2>Duplo finishing</h2><div className="two"><NumberField label="Lead Trim" value={topOffset} setValue={setTopOffset} max={100} unit={unit} factor={factor}/><NumberField label="Side Trim" value={calculatedSideTrim} setValue={setSideTrim} max={100} unit={unit} factor={factor} disabled={horizontalPlacement === 'center'}/></div><SegmentedChoice label="Horizontal placement" value={horizontalPlacement} options={[{ value: 'center', label: 'Centered' }, { value: 'manual', label: 'Manual Side Trim' }]} onChange={mode => { if (mode === 'manual') setSideTrim(calculatedSideTrim); setHorizontalPlacement(mode); }}/><div className="two"><NumberField label="Gutter Cut" value={gutterCut} setValue={setGutterCut} unit={unit} factor={factor}/><NumberField label="Gutter Slit" value={gutterSlit} setValue={setGutterSlit} unit={unit} factor={factor}/></div><p className="hint">Lead Trim is measured from the sheet top to the first finished cut line. Side Trim is measured from the sheet right edge to the first finished slit line.</p></section>
+        <section className="switches">{duplex && <label className="select"><span>Duplo barcode & registration on</span><select aria-label="Finishing side" value={finishingSide} onChange={event => setFinishingSide(event.target.value)}><option value="front">Front · finishing feed side</option><option value="back">Back · finishing feed side</option><option value="both">Both sides</option></select></label>}<label className="toggle-row"><span>Production trim marks</span><input type="checkbox" checked={marks} onChange={event => setMarks(event.target.checked)}/></label><label className="toggle-row"><span>Duplo registration mark</span><input type="checkbox" checked={duploRegMark} onChange={event => setDuploRegMark(event.target.checked)}/></label></section>
+        <details id="barcode-details" className="advanced" open={barcodeOpen} onToggle={event => setBarcodeOpen(event.currentTarget.open)}><summary>Job barcode <span className="details-value">{barcodeName ? barcodeName.replace(/\.pdf$/i, '') : 'None'}</span></summary><div className="details-body"><div className="barcode-actions"><button type="button" className="secondary" onClick={connectBarcodeDirectory}><FolderOpen size={14}/> {barcodeDirectoryHandle ? 'Reconnect folder' : 'Choose barcode folder'}</button><span className="barcode-status">{barcodeFolderStatus}</span></div><label className="session-loader"><input className="barcode-file-input" type="file" accept="application/pdf" multiple webkitdirectory="" onChange={loadBarcodeFilesForSession}/><span>Load folder for this session</span></label><label className="select"><span>Job barcode</span><select aria-label="Job barcode" value={barcodeName} onChange={event => setBarcodeFromEntry(event.target.value)}><option value="">No barcode</option>{barcodeEntries.map(entry => <option key={entry.name} value={entry.name}>{entry.name.replace(/\.pdf$/i, '')}</option>)}</select></label><div className="calculation barcode-spec"><span>Bottom crop · white knockout · top layer</span><b>{display(BARCODE_HEIGHT_MM)} high · top {display(BARCODE_TOP_OFFSET_MM)} · right {display(BARCODE_RIGHT_OFFSET_MM)}</b></div></div></details>
+        <div className={canExport ? 'summary compact-check' : 'summary warning compact-check'}><span>DC-616 CHECK</span><b>{!sourceFile ? 'Choose artwork to check fit' : barcodeNeedsAttention ? 'Review barcode before export' : canExport ? 'Sheet & layout fit' : 'Review artwork and layout'}</b><small>Lead {display(topOffset)} · Side {display(calculatedSideTrim)} · Cut {display(gutterCut)} · Slit {display(gutterSlit)}</small></div>
+      </div>
+      </div>
     </aside>
+    {exportOpen && <ExportDialog duplex={duplex} side={exportSide} onSideChange={setExportSide} onClose={() => setExportOpen(false)} onDownload={downloadOutput} ready={exportReady} sheetLabel={sheetLabel} total={cols * rows} issue={issueText}/>}
   </main>;
 }
 
