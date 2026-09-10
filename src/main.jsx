@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { AlertTriangle, CheckCircle2, Download, FileUp, FolderOpen, Minus, Plus, Save, Settings2, Trash2, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Download, FileUp, FolderOpen, Minus, Plus, RefreshCcw, Save, Settings2, Trash2, X } from 'lucide-react';
 import { PDFDocument } from 'pdf-lib';
-import { buildJobPdf, planJob, calculateOuterBleed, inspectBarcode, extractOutputSide, finishedSize } from './pdf-engine.js';
+import { buildJobPdf, planJob, calculateOuterBleed, classifyPlacement, inspectBarcode, extractOutputSide, finishedSize } from './pdf-engine.js';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import pdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
 import './styles.css';
@@ -183,9 +183,15 @@ function App() {
   const [savedPresets, setSavedPresets] = useState(loadStoredPresets);
   const [selectedPresetId, setSelectedPresetId] = useState('');
   const [presetsOpen, setPresetsOpen] = useState(false);
+  const [masterConfirmed, setMasterConfirmed] = useState(false);
+  const [fillMode, setFillMode] = useState('repeat');
+  const [mixedPlacements, setMixedPlacements] = useState({});
+  const [selectedCell, setSelectedCell] = useState(null);
+  const [placementNotice, setPlacementNotice] = useState('');
 
   const factor = unit === 'in' ? 25.4 : 1;
   const display = value => unit === 'in' ? `${(value / 25.4).toFixed(3)} in` : `${Number(value).toFixed(1)} mm`;
+  const displaySheetInches = value => `${Number((value / 25.4).toFixed(3))} in`;
   const effectiveBackFile = backInput === 'same' ? sourceFile : backFile;
   const inspectionRequest = useMemo(() => ({ sourceFile, selectedPage, duplex, effectiveBackFile, backSelectedPage }),
     [sourceFile, selectedPage, duplex, effectiveBackFile, backSelectedPage]);
@@ -195,9 +201,10 @@ function App() {
   const settings = useMemo(() => ({
     rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset,
     horizontalPlacement, sideTrim, marks, duploRegMark, barcodeFile,
-    duplex, backRotation, flipEdge, finishingSide,
+    duplex, backRotation, flipEdge, finishingSide, fillMode, mixedPlacements,
   }), [rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset,
-    horizontalPlacement, sideTrim, marks, duploRegMark, barcodeFile, duplex, backRotation, flipEdge, finishingSide]);
+    horizontalPlacement, sideTrim, marks, duploRegMark, barcodeFile, duplex, backRotation, flipEdge, finishingSide,
+    fillMode, mixedPlacements]);
   const planned = useMemo(() => {
     try { return { plan: planJob(meta, backMeta, settings), error: '' }; }
     catch (failure) { return { plan: null, error: failure.message }; }
@@ -213,7 +220,7 @@ function App() {
   const layoutLeft = frontGeometry?.x ?? (sheetW - layoutW) / 2;
   const calculatedSideTrim = sheetW - layoutLeft - layoutW;
   const geometricFit = Boolean(plan?.fits);
-  const canExport = geometricFit && (!barcodeName || Boolean(barcodeFile));
+  const canExport = masterConfirmed && geometricFit && (!barcodeName || Boolean(barcodeFile));
   const proofRequest = useMemo(() => ({ inspectionRequest, meta, backMeta, settings }), [inspectionRequest, meta, backMeta, settings]);
   const outputBytes = proof?.request === proofRequest ? proof.bytes : null;
   const proofImages = proof?.request === proofRequest ? proof.images : [];
@@ -224,14 +231,15 @@ function App() {
   const barcodeNeedsAttention = Boolean(barcodeName && !barcodeFile);
   const sheetLabel = paperPreset === '13x19' ? '13 × 19 in' : paperPreset === '12.4x18.4' ? '12.4 × 18.4 in' : `${display(sheetW)} × ${display(sheetH)}`;
   const backSize = backMeta ? finishedSize(backMeta, backRotation) : null;
+  const selectedPlacement = selectedCell === null ? null : mixedPlacements[selectedCell] || null;
   const sizesMatch = Boolean(meta && (!duplex || (backSize && Math.abs(itemW - backSize.width) <= 0.01 && Math.abs(itemH - backSize.height) <= 0.01)));
-  const issueText = statusError || (barcodeNeedsAttention ? 'Reconnect the selected barcode file.' : sourceFile && !processing && !geometricFit ? 'This layout does not fit. Review sheet size and repeat count.' : '');
-  const issueTab = barcodeNeedsAttention ? 'duplo' : !meta || (duplex && !sizesMatch) || inspectionError ? 'artwork' : 'layout';
+  const issueText = statusError || (barcodeNeedsAttention ? 'Reconnect the selected barcode file.' : sourceFile && meta && !masterConfirmed ? 'Confirm the finished item size before arranging the sheet.' : sourceFile && !processing && !geometricFit ? 'This layout does not fit. Review sheet size and repeat count.' : '');
+  const issueTab = barcodeNeedsAttention ? 'duplo' : !meta || !masterConfirmed || (duplex && !sizesMatch) || inspectionError ? 'artwork' : 'layout';
   const changeInspectorTab = tab => { setInspectorTab(tab); inspectorScroll.current?.scrollTo({ top: 0 }); };
   const reviewIssue = () => {
     changeInspectorTab(!sourceFile ? 'artwork' : issueTab);
     if (issueTab === 'duplo') setBarcodeOpen(true);
-    if (issueTab === 'artwork') setEditingSide(duplex && meta ? 'back' : 'front');
+    if (issueTab === 'artwork') setEditingSide(duplex && meta && masterConfirmed ? 'back' : 'front');
     requestAnimationFrame(() => {
       const target = document.getElementById(issueTab === 'duplo' ? 'barcode-details' : `panel-${!sourceFile ? 'artwork' : issueTab}`);
       target?.scrollIntoView({ block: 'nearest' });
@@ -285,7 +293,7 @@ function App() {
   useEffect(() => {
     let cancelled = false;
     setProof(null);
-    if (!sourceFile || !meta || !geometricFit || (duplex && !backMeta)) {
+    if (!sourceFile || !meta || !masterConfirmed || !geometricFit || (duplex && !backMeta)) {
       setBusy(false);
       return () => { cancelled = true; };
     }
@@ -308,7 +316,7 @@ function App() {
       }
     }, 120);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [proofRequest, geometricFit]);
+  }, [proofRequest, geometricFit, masterConfirmed]);
 
 
   const setBarcodeFromEntry = async (name, entries = barcodeEntries) => {
@@ -415,17 +423,77 @@ function App() {
   };
 
   const clearFront = () => {
-    setSourceFile(null); setSelectedPage(0); setProof(null); setError('');
+    setSourceFile(null); setSelectedPage(0); setProof(null); setError(''); setMasterConfirmed(false);
+    setFillMode('repeat'); setMixedPlacements({}); setSelectedCell(null); setPlacementNotice('');
   };
   const newJob = () => {
-    clearFront(); setBackFile(null); setBackSelectedPage(1); setInspection(null);
+    clearFront(); setBackFile(null); setBackInput('same'); setBackSelectedPage(1); setInspection(null);
+    setRotation(0); setBackRotation(0); setRotationPattern('same');
+    setDuplex(false); setProofView('both'); setExportSide('both'); setFlipEdge('long'); setFinishingSide('front');
+    setPaperPreset('13x19'); setSheetW(330.2); setSheetH(482.6); setCols(3); setRows(4);
+    setGutterCut(5); setGutterSlit(5); setTopOffset(10); setHorizontalPlacement('center'); setSideTrim(10);
+    setMarks(true); setDuploRegMark(true); setBarcodeFile(null); setBarcodeName('');
+    setMasterConfirmed(false); setFillMode('repeat'); setMixedPlacements({}); setSelectedCell(null); setPlacementNotice('');
+    setPresetName(''); setSelectedPresetId(''); setPresetsOpen(false); setBarcodeOpen(false);
     setEditingSide('front'); changeInspectorTab('artwork'); setExportOpen(false);
+  };
+  const requestNewJob = () => {
+    if (sourceFile && !window.confirm('Start a new job? Current artwork and unsaved settings will be cleared.')) return;
+    newJob();
   };
   const upload = event => {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
-    setSourceFile(file); setSelectedPage(0); setError('');
+    setSourceFile(file); setSelectedPage(0); setError(''); setMasterConfirmed(false);
+    setFillMode('repeat'); setMixedPlacements({}); setSelectedCell(null); setPlacementNotice('');
+  };
+  const uploadPlacement = async event => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || selectedCell === null || !meta) return;
+    try {
+      const placementMeta = await inspectPdf(file, 0);
+      const candidates = [0, 90];
+      const fittingRotation = candidates.find(angle => classifyPlacement(itemW, itemH, placementMeta, angle).status !== 'oversized');
+      if (fittingRotation === undefined) {
+        setPlacementNotice(`${file.name}: Finished size is larger than the confirmed ${display(itemW)} × ${display(itemH)} slot.`);
+        return;
+      }
+      const fit = classifyPlacement(itemW, itemH, placementMeta, fittingRotation);
+      setMixedPlacements(current => ({ ...current, [selectedCell]: {
+        file, meta: placementMeta, pageIndex: placementMeta.pageIndex, rotation: fittingRotation,
+      } }));
+      setPlacementNotice(fit.status === 'smaller'
+        ? `${file.name}: Finished size ${display(fit.width)} × ${display(fit.height)} is smaller and will be centered at 100% scale.`
+        : fittingRotation ? `${file.name}: Rotated ${fittingRotation}° to match the confirmed slot.` : '');
+      setError('');
+    } catch (failure) { setPlacementNotice(`Replacement PDF could not be read: ${failure.message}`); }
+  };
+  const updatePlacementPage = async pageIndex => {
+    const placement = mixedPlacements[selectedCell];
+    if (!placement) return;
+    try {
+      const placementMeta = await inspectPdf(placement.file, pageIndex);
+      const fit = classifyPlacement(itemW, itemH, placementMeta, placement.rotation);
+      if (fit.status === 'oversized') { setPlacementNotice(`PDF page ${pageIndex + 1} is larger than the confirmed slot.`); return; }
+      setMixedPlacements(current => ({ ...current, [selectedCell]: { ...placement, meta: placementMeta, pageIndex: placementMeta.pageIndex } }));
+      setPlacementNotice(fit.status === 'smaller' ? `PDF page ${pageIndex + 1} is smaller and will be centered at 100% scale.` : '');
+    } catch (failure) { setPlacementNotice(`PDF page could not be read: ${failure.message}`); }
+  };
+  const rotatePlacement = () => {
+    const placement = mixedPlacements[selectedCell];
+    if (!placement) return;
+    const nextRotation = (placement.rotation + 90) % 360;
+    const fit = classifyPlacement(itemW, itemH, placement.meta, nextRotation);
+    if (fit.status === 'oversized') { setPlacementNotice('This rotation would make the artwork larger than the confirmed slot.'); return; }
+    setMixedPlacements(current => ({ ...current, [selectedCell]: { ...placement, rotation: nextRotation } }));
+    setPlacementNotice(fit.status === 'smaller' ? `Rotated ${nextRotation}°. Smaller artwork remains centered at 100% scale.` : '');
+  };
+  const clearPlacement = () => {
+    if (selectedCell === null) return;
+    setMixedPlacements(current => { const next = { ...current }; delete next[selectedCell]; return next; });
+    setPlacementNotice('This slot now uses the master artwork.');
   };
   const uploadBack = event => {
     const file = event.target.files?.[0];
@@ -451,7 +519,6 @@ function App() {
   return <main className="app app-redesign">
     <nav className="utility-rail" aria-label="Job actions">
       <div className="rail-brand" aria-label="Repeat PDF Imposition"><span className="brand-mark">R</span></div>
-      <button className="rail-action" type="button" title="New Job" onClick={newJob}><Plus size={18}/><span>New</span></button>
       <div className="preset-menu-wrap">
         <button className="rail-action" type="button" title="Presets" aria-expanded={presetsOpen} aria-controls="preset-menu" onClick={() => setPresetsOpen(open => !open)}><Settings2 size={18}/><span>Presets</span></button>
         {presetsOpen && <section id="preset-menu" className="preset-menu" aria-label="Saved presets">
@@ -468,18 +535,30 @@ function App() {
 
     <section className="work redesigned-work">
       <div className="proof-toolbar">
-        <div><b>{paperPreset === '13x19' ? '13 × 19 in' : paperPreset === '12.4x18.4' ? '12.4 × 18.4 in' : 'Custom sheet'}</b><span>{display(sheetW)} × {display(sheetH)} · portrait</span></div>
+        <button className="start-new-job" type="button" onClick={requestNewJob}><RefreshCcw size={14}/><span>Start new job</span></button>
         {duplex && <div className="view-switch" aria-label="Proof view">{['front', 'back', 'both'].map(view => <button key={view} aria-pressed={proofView === view} onClick={() => setProofView(view)}>{view === 'both' ? 'Both' : view === 'front' ? 'Front' : 'Back'}</button>)}</div>}
       </div>
       <div className={`canvas-wrap duplex-canvas ${shownSides.length === 2 ? 'two-proofs' : ''}`} aria-busy={processing}>
-        {shownSides.map(side => <figure className="proof-panel" key={side}>
+        {shownSides.map((side, index) => {
+          const sideGeometry = plan?.sides.find(item => item.side === side);
+          return <figure className="proof-panel" key={side}>
           <figcaption>{side === 'front' ? 'Front' : 'Back'}<small>Output proof</small></figcaption>
-          <div className="proof-frame"><div className="sheet proof-sheet" style={{ aspectRatio: sheetW / sheetH, '--sheet-ratio': sheetW / sheetH }}>
-            {proofImages[side === 'front' ? 0 : 1] ? <img className="proof-image" src={proofImages[side === 'front' ? 0 : 1]} alt={`${side === 'front' ? 'Front' : 'Back'} exported PDF proof`}/> : <div className="proof-empty">{processing ? 'Generating output proof…' : statusError || (sourceFile && !geometricFit ? 'Front or Back layout does not fit this sheet' : 'Upload a PDF to generate the exact output proof')}</div>}
+          <div className="proof-frame"><div className="proof-stage" style={{ '--sheet-ratio': sheetW / sheetH }}>
+            {index === 0 && <><div className="sheet-dimension dimension-width" aria-label={`Sheet width ${displaySheetInches(sheetW)}`}><span>{displaySheetInches(sheetW)}</span></div><div className="sheet-dimension dimension-height" aria-label={`Sheet height ${displaySheetInches(sheetH)}`}><span>{displaySheetInches(sheetH)}</span></div></>}
+            <div className="sheet proof-sheet" style={{ aspectRatio: sheetW / sheetH, '--sheet-ratio': sheetW / sheetH }}>
+              {proofImages[side === 'front' ? 0 : 1] ? <img className="proof-image" src={proofImages[side === 'front' ? 0 : 1]} alt={`${side === 'front' ? 'Front' : 'Back'} exported PDF proof`}/> : <div className="proof-empty">{processing ? 'Generating output proof…' : statusError || (sourceFile && !geometricFit ? 'Front or Back layout does not fit this sheet' : 'Upload a PDF to generate the exact output proof')}</div>}
+              {side === 'front' && fillMode === 'mixed' && masterConfirmed && sideGeometry && <div className="placement-overlay" aria-label="Mixed artwork slots">{sideGeometry.cells.map(cell => {
+                const replacement = mixedPlacements[cell.slotIndex];
+                return <button type="button" key={cell.slotIndex} className={`placement-hotspot ${selectedCell === cell.slotIndex ? 'is-selected' : ''} ${replacement ? 'has-replacement' : ''}`}
+                  style={{ left: `${cell.x / sheetW * 100}%`, top: `${cell.y / sheetH * 100}%`, width: `${sideGeometry.itemW / sheetW * 100}%`, height: `${sideGeometry.itemH / sheetH * 100}%` }}
+                  aria-label={`Slot ${cell.slotIndex + 1}${replacement ? `, ${replacement.file.name}` : ', master artwork'}`}
+                  onClick={() => { setSelectedCell(cell.slotIndex); setPlacementNotice(''); changeInspectorTab('artwork'); }}><span>{cell.slotIndex + 1}</span></button>;
+              })}</div>}
+            </div>
           </div></div>
-        </figure>)}
+        </figure>;})}
       </div>
-      <footer><button type="button" className={`proof-status ${exportReady ? 'ok' : 'warn'}`} disabled={exportReady || processing} onClick={reviewIssue}>{exportReady ? <CheckCircle2/> : <AlertTriangle/>} {processing ? 'Updating proof…' : !sourceFile ? 'Choose artwork →' : barcodeNeedsAttention ? 'Review barcode →' : !outputBytes ? 'Review artwork / layout →' : 'Preview matches export'}</button><span>Finished · {display(itemW)} × {display(itemH)}</span><span>{cols} × {rows} · {cols * rows} up{duplex ? ' / side' : ''}</span></footer>
+      <footer><button type="button" className={`proof-status ${exportReady ? 'ok' : 'warn'}`} disabled={exportReady || processing} onClick={reviewIssue}>{exportReady ? <CheckCircle2/> : <AlertTriangle/>} {processing ? 'Updating proof…' : !sourceFile ? 'Choose artwork →' : meta && !masterConfirmed ? 'Confirm item size →' : barcodeNeedsAttention ? 'Review barcode →' : !outputBytes ? 'Review artwork / layout →' : 'Preview matches export'}</button><span>Finished · {display(itemW)} × {display(itemH)}</span><span>{cols} × {rows} · {cols * rows} up{duplex ? ' / side' : ''}</span></footer>
     </section>
 
     <aside className="inspector redesigned-inspector">
@@ -488,11 +567,12 @@ function App() {
       <div className="inspector-body" ref={inspectorScroll}>
       <section className="artwork-panel" role="tabpanel" id="panel-artwork" aria-labelledby="tab-artwork" hidden={inspectorTab !== 'artwork'}>
         <div className="panel-heading"><span className="eyebrow">01 / SOURCE</span><h1>Choose your artwork</h1><p className="section-intro">Set each side’s PDF page and direction here.</p></div>
-        <SegmentedChoice label="Printed sides" name="Job mode" value={duplex ? 'duplex' : 'single'} options={[{ value: 'single', label: 'Single side' }, { value: 'duplex', label: 'Double side' }]} onChange={value => { setDuplex(value === 'duplex'); setEditingSide('front'); setError(''); }}/>
+        <SegmentedChoice label="Printed sides" name="Job mode" value={duplex ? 'duplex' : 'single'} options={[{ value: 'single', label: 'Single side' }, { value: 'duplex', label: 'Double side' }]} onChange={value => { setDuplex(value === 'duplex'); setFillMode('repeat'); setMixedPlacements({}); setSelectedCell(null); setEditingSide('front'); setError(''); }}/>
         <SourceCard side="Front" expanded={editingSide === 'front'} onToggle={() => setEditingSide(editingSide === 'front' ? '' : 'front')} fileName={sourceFile?.name} pageIndex={meta?.pageIndex ?? selectedPage} angle={rotation} dimensions={meta ? `${display(itemW)} × ${display(itemH)}` : ''}>
           <section className="upload compact-upload"><input id="upload" aria-label="Upload front PDF" type="file" accept="application/pdf" onChange={upload}/><label htmlFor="upload"><FileUp size={17}/><b>{sourceFile ? 'Replace PDF' : 'Upload PDF'}</b></label>{sourceFile && <button className="clear" onClick={clearFront}><X size={14}/> Remove</button>}</section>
-          {meta && <label className="select compact-select"><span>Source PDF page</span><select aria-label="Front page" value={meta.pageIndex} onChange={event => { setSelectedPage(Number(event.target.value)); setError(''); }}>{Array.from({ length: meta.pages }, (_, index) => <option key={index} value={index}>PDF page {index + 1} of {meta.pages}</option>)}</select></label>}
-          <ArtworkDirection side="Front" value={rotation} onChange={setRotation}/>
+          {meta && <label className="select compact-select"><span>Source PDF page</span><select aria-label="Front page" value={meta.pageIndex} onChange={event => { setSelectedPage(Number(event.target.value)); setMasterConfirmed(false); setMixedPlacements({}); setSelectedCell(null); setError(''); }}>{Array.from({ length: meta.pages }, (_, index) => <option key={index} value={index}>PDF page {index + 1} of {meta.pages}</option>)}</select></label>}
+          <ArtworkDirection side="Front" value={rotation} onChange={angle => { setRotation(angle); setMasterConfirmed(false); setMixedPlacements({}); setSelectedCell(null); }}/>
+          {meta && <button type="button" className={`master-size-confirm ${masterConfirmed ? 'is-confirmed' : ''}`} onClick={() => { setMasterConfirmed(true); setPlacementNotice(''); }}><CheckCircle2 size={15}/><span>{masterConfirmed ? 'Item size confirmed' : 'Confirm item size'}<small>{display(itemW)} × {display(itemH)} · no scaling</small></span></button>}
         </SourceCard>
         {duplex && <SourceCard side="Back" expanded={editingSide === 'back'} onToggle={() => setEditingSide(editingSide === 'back' ? '' : 'back')} fileName={effectiveBackFile?.name} pageIndex={backMeta?.pageIndex ?? backSelectedPage} angle={backRotation} dimensions={backSize ? `${display(backSize.width)} × ${display(backSize.height)}` : ''}>
           <SegmentedChoice label="Back source" value={backInput} options={[{ value: 'same', label: 'Same PDF' }, { value: 'separate', label: 'Separate PDF' }]} onChange={value => { setBackInput(value); setBackSelectedPage(value === 'same' ? 1 : 0); setError(''); }}/>
@@ -501,7 +581,16 @@ function App() {
           {backInput === 'same' && meta?.pages === 1 && <p className="hint">This PDF has one page. Both sides use Page 1; upload a separate back if needed.</p>}
           <ArtworkDirection side="Back" value={backRotation} onChange={setBackRotation}/>
         </SourceCard>}
-        {meta && sizesMatch && <div className="source-check"><CheckCircle2 size={16}/><span>{duplex ? 'Finished sizes match' : 'Finished size detected'}<small>{display(itemW)} × {display(itemH)} · no scaling</small></span></div>}
+        {meta && sizesMatch && duplex && <div className="source-check"><CheckCircle2 size={16}/><span>Finished sizes match<small>{display(itemW)} × {display(itemH)} · no scaling</small></span></div>}
+        {meta && masterConfirmed && !duplex && <section className="fill-mode-section"><SegmentedChoice label="Artwork filling" value={fillMode} options={[{ value: 'repeat', label: 'Repeat one artwork' }, { value: 'mixed', label: 'Mixed artworks' }]} onChange={value => { setFillMode(value); setSelectedCell(value === 'mixed' ? 0 : null); setPlacementNotice(''); }}/>
+          {fillMode === 'mixed' && <div className="slot-editor"><div className="slot-editor-heading"><div><b>{selectedCell === null ? 'Choose a slot on the sheet' : `Slot ${selectedCell + 1}`}</b><span>{selectedPlacement ? selectedPlacement.file.name : 'Using master artwork'}</span></div>{selectedPlacement && <button type="button" className="icon-button" aria-label="Clear replacement" onClick={clearPlacement}><Trash2 size={14}/></button>}</div>
+            {selectedCell !== null && <><section className="upload compact-upload slot-upload"><input id="slot-upload" aria-label={`Replace artwork in slot ${selectedCell + 1}`} type="file" accept="application/pdf" onChange={uploadPlacement}/><label htmlFor="slot-upload"><FileUp size={16}/><b>{selectedPlacement ? 'Replace artwork' : 'Add artwork to this slot'}</b></label></section>
+              {selectedPlacement && <div className="slot-controls"><label className="select compact-select"><span>PDF page</span><select aria-label="Replacement PDF page" value={selectedPlacement.pageIndex} onChange={event => updatePlacementPage(Number(event.target.value))}>{Array.from({ length: selectedPlacement.meta.pages }, (_, pageIndex) => <option key={pageIndex} value={pageIndex}>Page {pageIndex + 1} of {selectedPlacement.meta.pages}</option>)}</select></label><button type="button" className="secondary" onClick={rotatePlacement}>Rotate 90°</button></div>}
+            </>}
+            {placementNotice && <p className="placement-notice" role="status">{placementNotice}</p>}
+            <p className="hint">Smaller artwork stays centered at 100% scale. Artwork larger than the confirmed slot is not added.</p>
+          </div>}
+        </section>}
         <div className="panel-next"><span>Ready to arrange the sheet?</span><button type="button" onClick={() => changeInspectorTab('layout')}>Sheet & grid layout →</button></div>
       </section>
       <div className="tab-panel" role="tabpanel" id="panel-layout" aria-labelledby="tab-layout" hidden={inspectorTab !== 'layout'}>

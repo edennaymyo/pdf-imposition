@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PDFDocument, rgb } from 'pdf-lib';
-import { planJob, buildJobPdf, extractOutputSide, barcodeCollisions, outputBleedAvailability } from '../src/pdf-engine.js';
+import { planJob, buildJobPdf, extractOutputSide, barcodeCollisions, outputBleedAvailability, classifyPlacement } from '../src/pdf-engine.js';
 
 const front = { width: 88.9, height: 50.8, top: 3, bottom: 2.5, left: 1.5, right: 3 };
 const back = { ...front, top: 1, bottom: 3, left: 3, right: 2 };
@@ -58,6 +58,20 @@ test('quarter-turn back page matches landscape front without scaling', () => {
   assert.equal(plan.fits, true);
 });
 
+test('mixed artwork keeps the master slot and centers smaller finished artwork without scaling', () => {
+  const smaller = { ...front, width: 60, height: 30 };
+  const settings = { ...defaults, duplex: false, fillMode: 'mixed', mixedPlacements: {
+    1: { meta: smaller, pageIndex: 0, rotation: 0 },
+  } };
+  const plan = planJob(front, null, settings);
+  const cell = plan.sides[0].cells.find(item => item.slotIndex === 1);
+  assert.equal(classifyPlacement(front.width, front.height, smaller).status, 'smaller');
+  assert.equal(cell.placementStatus, 'smaller');
+  near(cell.artX, cell.x + (front.width - smaller.width) / 2);
+  near(cell.artY, cell.y + (front.height - smaller.height) / 2);
+  assert.throws(() => planJob(front, null, { ...settings, mixedPlacements: { 0: { meta: { ...front, width: 100 }, rotation: 0 } } }), /larger/);
+});
+
 test('back bleed overflow is caught even when front fits', () => {
   const f = { ...front, top: 1, bottom: 1 };
   const plan = planJob(f, back, { ...defaults, topOffset: 1, flipEdge: 'short' });
@@ -95,4 +109,17 @@ test('PDF output: paired order, page dimensions, separate sides and single-sided
   for (const index of [0, 1]) assert.equal((await PDFDocument.load(await extractOutputSide(bytes, index))).getPageCount(), 1);
   const single = await buildJobPdf({ file, meta, pageIndex: 0 }, null, { ...defaults, duplex: false });
   assert.equal((await PDFDocument.load(single)).getPageCount(), 1);
+
+  const smallDoc = await PDFDocument.create();
+  const smallMeta = { width: 60, height: 30, top: 3, bottom: 3, left: 3, right: 3 };
+  const smallPage = smallDoc.addPage([66 * mm, 36 * mm]);
+  smallPage.setTrimBox(3 * mm, 3 * mm, smallMeta.width * mm, smallMeta.height * mm);
+  smallPage.setBleedBox(0, 0, 66 * mm, 36 * mm);
+  smallPage.drawRectangle({ x: 0, y: 0, width: 66 * mm, height: 36 * mm, color: rgb(0, 1, 0) });
+  const smallFile = new Blob([await smallDoc.save()]);
+  const mixed = await buildJobPdf({ file, meta, pageIndex: 0 }, null, {
+    ...defaults, duplex: false, fillMode: 'mixed',
+    mixedPlacements: { 1: { file: smallFile, meta: smallMeta, pageIndex: 0, rotation: 0 } },
+  });
+  assert.equal((await PDFDocument.load(mixed)).getPageCount(), 1);
 });

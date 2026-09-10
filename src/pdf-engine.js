@@ -182,6 +182,20 @@ export function finishedSize(meta, rotation) {
   return { width: quarter ? meta.height : meta.width, height: quarter ? meta.width : meta.height };
 }
 
+export function classifyPlacement(slotWidth, slotHeight, meta, rotation = 0) {
+  const size = finishedSize(meta, rotation);
+  const tolerance = 0.01;
+  const oversized = size.width > slotWidth + tolerance || size.height > slotHeight + tolerance;
+  const exact = !oversized && Math.abs(size.width - slotWidth) <= tolerance && Math.abs(size.height - slotHeight) <= tolerance;
+  return {
+    status: oversized ? 'oversized' : exact ? 'exact' : 'smaller',
+    width: size.width,
+    height: size.height,
+    offsetX: Math.max(0, (slotWidth - size.width) / 2),
+    offsetY: Math.max(0, (slotHeight - size.height) / 2),
+  };
+}
+
 // All plan coordinates are millimetres measured from the top-left of a PDF sheet.
 // Reflect positions, never glyphs/images. Each back cell retains its front partner's pattern.
 export function planJob(front, back, settings) {
@@ -223,16 +237,25 @@ export function planJob(front, back, settings) {
     for (let row = 0; row < rows; row++) for (let col = 0; col < cols; col++) {
       const destRow = isBack && flipEdge === 'short' ? rows - 1 - row : row;
       const destCol = isBack && flipEdge === 'long' ? cols - 1 - col : col;
-      const angle = cellRotation(baseRotation, rotationPattern, row, col);
-      const availability = outputBleedAvailability(meta, angle);
+      const slotIndex = row * cols + col;
+      const placement = !isBack && settings.fillMode === 'mixed' ? settings.mixedPlacements?.[slotIndex] : null;
+      const sourceMeta = placement?.meta || meta;
+      const angle = placement ? placement.rotation ?? 0 : cellRotation(baseRotation, rotationPattern, row, col);
+      const fit = classifyPlacement(itemW, itemH, sourceMeta, angle);
+      if (fit.status === 'oversized') throw new Error(`Artwork in slot ${slotIndex + 1} is larger than the confirmed item size.`);
+      const availability = outputBleedAvailability(sourceMeta, angle);
       if (destRow === 0) outer.top = Math.min(outer.top, availability.top);
       if (destRow === rows - 1) outer.bottom = Math.min(outer.bottom, availability.bottom);
       if (destCol === 0) outer.left = Math.min(outer.left, availability.left);
       if (destCol === cols - 1) outer.right = Math.min(outer.right, availability.right);
-      cells.push({ row: destRow, col: destCol, partnerRow: row, partnerCol: col,
-        rotation: angle, x: x + destCol * (itemW + gutterSlit), y: y + destRow * (itemH + gutterCut) });
+      const cellX = x + destCol * (itemW + gutterSlit);
+      const cellY = y + destRow * (itemH + gutterCut);
+      cells.push({ row: destRow, col: destCol, partnerRow: row, partnerCol: col, slotIndex,
+        rotation: angle, sourceMeta, placementStatus: fit.status,
+        x: cellX, y: cellY, artX: cellX + fit.offsetX, artY: cellY + fit.offsetY,
+        artW: fit.width, artH: fit.height });
     }
-    for (const cell of cells) cell.bleed = sourceBleedsForOutput(meta, cell.rotation, {
+    for (const cell of cells) cell.bleed = sourceBleedsForOutput(cell.sourceMeta, cell.rotation, {
       top: cell.row === 0 ? outer.top : gutterCut / 2,
       bottom: cell.row === rows - 1 ? outer.bottom : gutterCut / 2,
       left: cell.col === 0 ? outer.left : gutterSlit / 2,
@@ -273,29 +296,34 @@ export async function buildJobPdf(front, back, settings) {
   // A single output owns both pages; preview and export consume these exact bytes.
   const documents = new Map();
   for (const geometry of plan.sides) {
-    const input = geometry.side === 'front' ? front : back;
-    let source = documents.get(input.file);
-    if (!source) {
-      source = await PDFDocument.load(await input.file.arrayBuffer(), { updateMetadata: false });
-      documents.set(input.file, source);
-    }
-    const sourcePage = source.getPage(input.pageIndex);
-    const trim = sourcePage.getTrimBox();
     const outputPage = output.addPage([settings.sheetW * POINTS_PER_MM, settings.sheetH * POINTS_PER_MM]);
-    const embeddedByCrop = new Map();
+    const embeddedByInput = new Map();
     for (const cell of geometry.cells) {
+      const defaultInput = geometry.side === 'front' ? front : back;
+      const input = geometry.side === 'front' && settings.fillMode === 'mixed'
+        ? settings.mixedPlacements?.[cell.slotIndex] || defaultInput
+        : defaultInput;
+      let source = documents.get(input.file);
+      if (!source) {
+        source = await PDFDocument.load(await input.file.arrayBuffer(), { updateMetadata: false });
+        documents.set(input.file, source);
+      }
+      const sourcePage = source.getPage(input.pageIndex);
+      const trim = sourcePage.getTrimBox();
       const bleed = cell.bleed;
-      const cropKey = JSON.stringify(bleed);
-      let embedded = embeddedByCrop.get(cropKey);
+      let fileEmbeds = embeddedByInput.get(input.file);
+      if (!fileEmbeds) { fileEmbeds = new Map(); embeddedByInput.set(input.file, fileEmbeds); }
+      const cropKey = `${input.pageIndex}:${JSON.stringify(bleed)}`;
+      let embedded = fileEmbeds.get(cropKey);
       if (!embedded) {
         embedded = await output.embedPage(sourcePage, {
           left: trim.x - bleed.left, bottom: trim.y - bleed.bottom,
           right: trim.x + trim.width + bleed.right, top: trim.y + trim.height + bleed.top,
         });
-        embeddedByCrop.set(cropKey, embedded);
+        fileEmbeds.set(cropKey, embedded);
       }
       drawEmbeddedArtwork(outputPage, embedded, trim, bleed, cell.rotation,
-        cell.x * POINTS_PER_MM, (settings.sheetH - cell.y - geometry.itemH) * POINTS_PER_MM);
+        cell.artX * POINTS_PER_MM, (settings.sheetH - cell.artY - cell.artH) * POINTS_PER_MM);
     }
     const barcodeOnSide = Boolean(settings.barcodeFile) && finishingOnSide(geometry.side, settings);
     if (settings.marks) drawProductionMarks(outputPage, {
