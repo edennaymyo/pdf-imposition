@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { AlertTriangle, CheckCircle2, Download, FileUp, FolderOpen, Minus, Plus, RefreshCcw, Save, Settings2, Trash2, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Download, FileUp, FolderOpen, Minus, Plus, RefreshCcw, RotateCw, Save, Settings2, Trash2, X } from 'lucide-react';
 import { PDFDocument } from 'pdf-lib';
 import { buildJobPdf, planJob, calculateOuterBleed, classifyPlacement, inspectBarcode, extractOutputSide, finishedSize } from './pdf-engine.js';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
@@ -184,6 +184,7 @@ function App() {
   const [selectedPresetId, setSelectedPresetId] = useState('');
   const [presetsOpen, setPresetsOpen] = useState(false);
   const [masterConfirmed, setMasterConfirmed] = useState(false);
+  const [sizeConfirmOpen, setSizeConfirmOpen] = useState(false);
   const [fillMode, setFillMode] = useState('repeat');
   const [mixedPlacements, setMixedPlacements] = useState({});
   const [selectedCell, setSelectedCell] = useState(null);
@@ -267,6 +268,14 @@ function App() {
     inspect();
     return () => { cancelled = true; };
   }, [inspectionRequest]);
+
+  useEffect(() => {
+    if (!meta) {
+      setSizeConfirmOpen(false);
+      return;
+    }
+    if (!masterConfirmed) setSizeConfirmOpen(true);
+  }, [meta, masterConfirmed]);
 
   useEffect(() => {
     let cancelled = false;
@@ -483,11 +492,14 @@ function App() {
     pendingPlacementCell.current = null;
     await addPlacementFile(file, cellIndex);
   };
-  const openPlacementPicker = cellIndex => {
-    pendingPlacementCell.current = cellIndex;
+  const selectPlacementCell = cellIndex => {
     setSelectedCell(cellIndex);
     setPlacementNotice('');
     changeInspectorTab('artwork');
+  };
+  const changePlacementFile = () => {
+    if (selectedCell === null) return;
+    pendingPlacementCell.current = selectedCell;
     slotUploadInput.current?.click();
   };
   const dropPlacement = async (event, cellIndex) => {
@@ -527,6 +539,19 @@ function App() {
     if (selectedCell === null) return;
     setMixedPlacements(current => { const next = { ...current }; delete next[selectedCell]; return next; });
     setPlacementNotice('This slot now uses the master artwork.');
+  };
+  const changeMasterPage = pageIndex => {
+    if (!meta) return;
+    setSelectedPage(Math.max(0, Math.min(meta.pages - 1, pageIndex)));
+    setMasterConfirmed(false);
+    setMixedPlacements({});
+    setSelectedCell(null);
+    setError('');
+  };
+  const confirmMasterSize = () => {
+    setMasterConfirmed(true);
+    setSizeConfirmOpen(false);
+    setPlacementNotice('');
   };
   const uploadBack = event => {
     const file = event.target.files?.[0];
@@ -569,11 +594,14 @@ function App() {
     <section className="work redesigned-work">
       <div className="proof-toolbar">
         <button className="start-new-job" type="button" onClick={requestNewJob}><RefreshCcw size={14}/><span>Start new job</span></button>
+        {meta && masterConfirmed && <div className="confirmed-size-bar" aria-label={`Confirmed finished size ${display(itemW)} by ${display(itemH)}`}><span>Finished size</span><strong>{display(itemW)} × {display(itemH)}</strong><button type="button" onClick={() => setSizeConfirmOpen(true)}>Change</button></div>}
         {duplex && <div className="view-switch" aria-label="Proof view">{['front', 'back', 'both'].map(view => <button key={view} aria-pressed={proofView === view} onClick={() => setProofView(view)}>{view === 'both' ? 'Both' : view === 'front' ? 'Front' : 'Back'}</button>)}</div>}
       </div>
       <div className={`canvas-wrap duplex-canvas ${shownSides.length === 2 ? 'two-proofs' : ''}`} aria-busy={processing}>
         {shownSides.map((side, index) => {
           const sideGeometry = plan?.sides.find(item => item.side === side);
+          const selectedGeometryCell = sideGeometry?.cells.find(cell => cell.slotIndex === selectedCell);
+          const toolbarBelow = Boolean(selectedGeometryCell && selectedGeometryCell.y / sheetH < 0.14);
           return <figure className="proof-panel" key={side}>
           <figcaption>{side === 'front' ? 'Front' : 'Back'}<small>Output proof</small></figcaption>
           <div className="proof-frame"><div className="proof-stage" style={{ '--sheet-ratio': sheetW / sheetH }}>
@@ -584,16 +612,22 @@ function App() {
                 const replacement = mixedPlacements[cell.slotIndex];
                 return <button type="button" key={cell.slotIndex} className={`placement-hotspot ${selectedCell === cell.slotIndex ? 'is-selected' : ''} ${replacement ? 'has-replacement' : ''} ${draggedOverCell === cell.slotIndex ? 'is-dragover' : ''}`}
                   style={{ left: `${cell.x / sheetW * 100}%`, top: `${cell.y / sheetH * 100}%`, width: `${sideGeometry.itemW / sheetW * 100}%`, height: `${sideGeometry.itemH / sheetH * 100}%` }}
-                  aria-label={`Block ${cell.slotIndex + 1}${replacement ? `, ${replacement.file.name}` : ', master artwork'}. Click or drop a PDF to replace.`}
-                  onClick={() => openPlacementPicker(cell.slotIndex)}
+                  aria-label={`Block ${cell.slotIndex + 1}${replacement ? `, ${replacement.file.name}` : ', master artwork'}. Click to edit or drop a PDF to replace.`}
+                  onClick={() => selectPlacementCell(cell.slotIndex)}
                   onDragEnter={event => { event.preventDefault(); setDraggedOverCell(cell.slotIndex); }}
                   onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDraggedOverCell(cell.slotIndex); }}
                   onDragLeave={() => setDraggedOverCell(current => current === cell.slotIndex ? null : current)}
                   onDrop={event => dropPlacement(event, cell.slotIndex)}>
                   <span className="placement-slot-number">{cell.slotIndex + 1}</span>
-                  <span className="placement-slot-action"><FileUp size={14}/>{draggedOverCell === cell.slotIndex ? 'Drop PDF here' : replacement ? 'Replace PDF' : 'Add PDF'}</span>
+                  <span className="placement-slot-action"><FileUp size={14}/>{draggedOverCell === cell.slotIndex ? 'Drop PDF here' : 'Edit block'}</span>
                 </button>;
               })}</div>}
+              {side === 'front' && fillMode === 'mixed' && masterConfirmed && selectedGeometryCell && <div className={`placement-context-toolbar ${toolbarBelow ? 'is-below' : ''}`}
+                style={{ left: '50%', top: `${(toolbarBelow ? selectedGeometryCell.y + sideGeometry.itemH : selectedGeometryCell.y) / sheetH * 100}%` }} role="group" aria-label={`Edit block ${selectedCell + 1}`}>
+                <div className="placement-context-title"><b>Block {selectedCell + 1}</b><span>{selectedPlacement ? selectedPlacement.file.name : 'Master artwork'}</span></div>
+                {selectedPlacement && <div className="placement-page-controls"><button type="button" aria-label="Previous PDF page" disabled={selectedPlacement.pageIndex === 0} onClick={() => updatePlacementPage(selectedPlacement.pageIndex - 1)}><ChevronLeft size={14}/></button><select aria-label="Replacement PDF page" value={selectedPlacement.pageIndex} onChange={event => updatePlacementPage(Number(event.target.value))}>{Array.from({ length: selectedPlacement.meta.pages }, (_, pageIndex) => <option key={pageIndex} value={pageIndex}>Page {pageIndex + 1} of {selectedPlacement.meta.pages}</option>)}</select><button type="button" aria-label="Next PDF page" disabled={selectedPlacement.pageIndex === selectedPlacement.meta.pages - 1} onClick={() => updatePlacementPage(selectedPlacement.pageIndex + 1)}><ChevronRight size={14}/></button></div>}
+                <div className="placement-context-actions"><button type="button" onClick={changePlacementFile}><FileUp size={13}/> Change PDF</button>{selectedPlacement && <><button type="button" onClick={rotatePlacement}><RotateCw size={13}/> 90°</button><button type="button" onClick={clearPlacement}><RefreshCcw size={13}/> Reset</button></>}<button type="button" className="context-close" aria-label="Close block editor" onClick={() => setSelectedCell(null)}><X size={14}/></button></div>
+              </div>}
             </div>
           </div></div>
         </figure>;})}
@@ -612,7 +646,7 @@ function App() {
           <section className="upload compact-upload"><input id="upload" aria-label="Upload front PDF" type="file" accept="application/pdf" onChange={upload}/><label htmlFor="upload"><FileUp size={17}/><b>{sourceFile ? 'Replace PDF' : 'Upload PDF'}</b></label>{sourceFile && <button className="clear" onClick={clearFront}><X size={14}/> Remove</button>}</section>
           {meta && <label className="select compact-select"><span>Source PDF page</span><select aria-label="Front page" value={meta.pageIndex} onChange={event => { setSelectedPage(Number(event.target.value)); setMasterConfirmed(false); setMixedPlacements({}); setSelectedCell(null); setError(''); }}>{Array.from({ length: meta.pages }, (_, index) => <option key={index} value={index}>PDF page {index + 1} of {meta.pages}</option>)}</select></label>}
           <ArtworkDirection side="Front" value={rotation} onChange={angle => { setRotation(angle); setMasterConfirmed(false); setMixedPlacements({}); setSelectedCell(null); }}/>
-          {meta && <button type="button" className={`master-size-confirm ${masterConfirmed ? 'is-confirmed' : ''}`} onClick={() => { setMasterConfirmed(true); setPlacementNotice(''); }}><CheckCircle2 size={15}/><span>{masterConfirmed ? 'Item size confirmed' : 'Confirm item size'}<small>{display(itemW)} × {display(itemH)} · no scaling</small></span></button>}
+          {meta && masterConfirmed && <button type="button" className="master-size-confirm is-confirmed" onClick={() => setSizeConfirmOpen(true)}><CheckCircle2 size={15}/><span>Finished size confirmed<small>{display(itemW)} × {display(itemH)} · no scaling · Change</small></span></button>}
         </SourceCard>
         {duplex && <SourceCard side="Back" expanded={editingSide === 'back'} onToggle={() => setEditingSide(editingSide === 'back' ? '' : 'back')} fileName={effectiveBackFile?.name} pageIndex={backMeta?.pageIndex ?? backSelectedPage} angle={backRotation} dimensions={backSize ? `${display(backSize.width)} × ${display(backSize.height)}` : ''}>
           <SegmentedChoice label="Back source" value={backInput} options={[{ value: 'same', label: 'Same PDF' }, { value: 'separate', label: 'Separate PDF' }]} onChange={value => { setBackInput(value); setBackSelectedPage(value === 'same' ? 1 : 0); setError(''); }}/>
@@ -623,12 +657,9 @@ function App() {
         </SourceCard>}
         {meta && sizesMatch && duplex && <div className="source-check"><CheckCircle2 size={16}/><span>Finished sizes match<small>{display(itemW)} × {display(itemH)} · no scaling</small></span></div>}
         {meta && masterConfirmed && !duplex && <section className="fill-mode-section"><SegmentedChoice label="Artwork filling" value={fillMode} options={[{ value: 'repeat', label: 'Repeat one artwork' }, { value: 'mixed', label: 'Mixed artworks' }]} onChange={value => { setFillMode(value); setSelectedCell(value === 'mixed' ? 0 : null); setPlacementNotice(''); }}/>
-          {fillMode === 'mixed' && <div className="slot-editor"><div className="slot-editor-heading"><div><b>{selectedCell === null ? 'Choose a block on the sheet' : `Block ${selectedCell + 1}`}</b><span>{selectedPlacement ? selectedPlacement.file.name : 'Using master artwork'}</span></div>{selectedPlacement && <button type="button" className="icon-button" aria-label="Clear replacement" onClick={clearPlacement}><Trash2 size={14}/></button>}</div>
-            {selectedCell !== null && <><section className="upload compact-upload slot-upload"><input ref={slotUploadInput} id="slot-upload" aria-label={`Replace artwork in block ${selectedCell + 1}`} type="file" accept="application/pdf" onChange={uploadPlacement}/><label htmlFor="slot-upload"><FileUp size={16}/><b>{selectedPlacement ? 'Replace artwork' : 'Add artwork to this block'}</b></label></section>
-              {selectedPlacement && <div className="slot-controls"><label className="select compact-select"><span>PDF page</span><select aria-label="Replacement PDF page" value={selectedPlacement.pageIndex} onChange={event => updatePlacementPage(Number(event.target.value))}>{Array.from({ length: selectedPlacement.meta.pages }, (_, pageIndex) => <option key={pageIndex} value={pageIndex}>Page {pageIndex + 1} of {selectedPlacement.meta.pages}</option>)}</select></label><button type="button" className="secondary" onClick={rotatePlacement}>Rotate 90°</button></div>}
-            </>}
+          {fillMode === 'mixed' && <div className="slot-editor"><input ref={slotUploadInput} className="visually-hidden" aria-label="Choose replacement artwork PDF" type="file" accept="application/pdf" onChange={uploadPlacement}/><div className="slot-editor-heading"><div><b>{selectedCell === null ? 'Select a block on the sheet' : `Block ${selectedCell + 1} selected`}</b><span>{selectedPlacement ? `${selectedPlacement.file.name} · Page ${selectedPlacement.pageIndex + 1}` : selectedCell === null ? 'Click to edit · drop a PDF to replace' : 'Using master artwork'}</span></div></div>
             {placementNotice && <p className="placement-notice" role="status">{placementNotice}</p>}
-            <p className="hint">Click a block on the artboard or drop a PDF onto it. Smaller artwork stays centered at 100% scale.</p>
+            <p className="hint">Click a block to open its editor on the artboard. Or drop a PDF directly onto any block. Smaller artwork stays centered at 100% scale.</p>
           </div>}
         </section>}
         <div className="panel-next"><span>Ready to arrange the sheet?</span><button type="button" onClick={() => changeInspectorTab('layout')}>Sheet & grid layout →</button></div>
@@ -651,7 +682,14 @@ function App() {
       </div>
       </div>
     </aside>
-    {exportOpen && <ExportDialog duplex={duplex} side={exportSide} onSideChange={setExportSide} onClose={() => setExportOpen(false)} onDownload={downloadOutput} ready={exportReady} sheetLabel={sheetLabel} total={cols * rows} issue={issueText}/>}
+    {sizeConfirmOpen && meta && <div className="size-confirm-backdrop" role="presentation"><section className="size-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="size-confirm-title">
+      <span className="eyebrow">FINISHED SIZE</span><h2 id="size-confirm-title">Confirm before arranging</h2><p className="size-confirm-copy">The selected PDF TrimBox becomes the fixed size for every block. Artwork is never stretched.</p>
+      <div className="size-confirm-value"><span>Finished size</span><strong>{display(itemW)} × {display(itemH)}</strong><small>No scaling</small></div>
+      <div className="size-confirm-controls"><div><span>Source page</span><div className="size-page-stepper"><button type="button" aria-label="Previous source page" disabled={meta.pageIndex === 0} onClick={() => changeMasterPage(meta.pageIndex - 1)}><ChevronLeft size={15}/></button><select aria-label="Confirm source PDF page" value={meta.pageIndex} onChange={event => changeMasterPage(Number(event.target.value))}>{Array.from({ length: meta.pages }, (_, pageIndex) => <option key={pageIndex} value={pageIndex}>Page {pageIndex + 1} of {meta.pages}</option>)}</select><button type="button" aria-label="Next source page" disabled={meta.pageIndex === meta.pages - 1} onClick={() => changeMasterPage(meta.pageIndex + 1)}><ChevronRight size={15}/></button></div></div><div><span>Direction</span><div className="size-rotation-options">{[0,90,180,270].map(angle => <button type="button" key={angle} aria-pressed={rotation === angle} onClick={() => { setRotation(angle); setMasterConfirmed(false); setMixedPlacements({}); setSelectedCell(null); }}>{angle}°</button>)}</div></div></div>
+      <div className="size-confirm-actions"><label className="secondary size-replace"><input type="file" accept="application/pdf" onChange={upload}/><FileUp size={15}/> Choose another PDF</label><button type="button" className="primary-action" onClick={confirmMasterSize}><CheckCircle2 size={16}/> Confirm finished size</button></div>
+    </section></div>}
+    {exportOpen && <ExportDialog duplex={duplex} side={exportSide} onSideChange={setExportSide} onClose={() => setExportOpen(false)}
+      onDownload={downloadOutput} ready={exportReady} sheetLabel={sheetLabel} total={cols * rows} issue={issueText}/>}
   </main>;
 }
 
