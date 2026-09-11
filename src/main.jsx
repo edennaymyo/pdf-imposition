@@ -278,6 +278,15 @@ function App() {
   }, [meta, masterConfirmed]);
 
   useEffect(() => {
+    if (!sizeConfirmOpen) return undefined;
+    const closeOnEscape = event => {
+      if (event.key === 'Escape') setSizeConfirmOpen(false);
+    };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [sizeConfirmOpen]);
+
+  useEffect(() => {
     let cancelled = false;
     const restoreBarcodeDirectory = async () => {
       try {
@@ -646,7 +655,7 @@ function App() {
           <section className="upload compact-upload"><input id="upload" aria-label="Upload front PDF" type="file" accept="application/pdf" onChange={upload}/><label htmlFor="upload"><FileUp size={17}/><b>{sourceFile ? 'Replace PDF' : 'Upload PDF'}</b></label>{sourceFile && <button className="clear" onClick={clearFront}><X size={14}/> Remove</button>}</section>
           {meta && <label className="select compact-select"><span>Source PDF page</span><select aria-label="Front page" value={meta.pageIndex} onChange={event => { setSelectedPage(Number(event.target.value)); setMasterConfirmed(false); setMixedPlacements({}); setSelectedCell(null); setError(''); }}>{Array.from({ length: meta.pages }, (_, index) => <option key={index} value={index}>PDF page {index + 1} of {meta.pages}</option>)}</select></label>}
           <ArtworkDirection side="Front" value={rotation} onChange={angle => { setRotation(angle); setMasterConfirmed(false); setMixedPlacements({}); setSelectedCell(null); }}/>
-          {meta && masterConfirmed && <button type="button" className="master-size-confirm is-confirmed" onClick={() => setSizeConfirmOpen(true)}><CheckCircle2 size={15}/><span>Finished size confirmed<small>{display(itemW)} × {display(itemH)} · no scaling · Change</small></span></button>}
+          {meta && <button type="button" className={`master-size-confirm ${masterConfirmed ? 'is-confirmed' : ''}`} onClick={() => setSizeConfirmOpen(true)}>{masterConfirmed ? <CheckCircle2 size={15}/> : <AlertTriangle size={15}/>}<span>{masterConfirmed ? 'Finished size confirmed' : 'Confirm finished size'}<small>{display(itemW)} × {display(itemH)} · no scaling{masterConfirmed ? ' · Change' : ''}</small></span></button>}
         </SourceCard>
         {duplex && <SourceCard side="Back" expanded={editingSide === 'back'} onToggle={() => setEditingSide(editingSide === 'back' ? '' : 'back')} fileName={effectiveBackFile?.name} pageIndex={backMeta?.pageIndex ?? backSelectedPage} angle={backRotation} dimensions={backSize ? `${display(backSize.width)} × ${display(backSize.height)}` : ''}>
           <SegmentedChoice label="Back source" value={backInput} options={[{ value: 'same', label: 'Same PDF' }, { value: 'separate', label: 'Separate PDF' }]} onChange={value => { setBackInput(value); setBackSelectedPage(value === 'same' ? 1 : 0); setError(''); }}/>
@@ -683,7 +692,7 @@ function App() {
       </div>
     </aside>
     {sizeConfirmOpen && meta && <div className="size-confirm-backdrop" role="presentation"><section className="size-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="size-confirm-title">
-      <span className="eyebrow">FINISHED SIZE</span><h2 id="size-confirm-title">Confirm before arranging</h2><p className="size-confirm-copy">The selected PDF TrimBox becomes the fixed size for every block. Artwork is never stretched.</p>
+      <div className="size-confirm-heading"><div><span className="eyebrow">FINISHED SIZE</span><h2 id="size-confirm-title">Confirm before arranging</h2></div><div className="size-unit-switch" aria-label="Finished size unit"><button type="button" aria-pressed={unit === 'mm'} onClick={() => setUnit('mm')}>mm</button><button type="button" aria-pressed={unit === 'in'} onClick={() => setUnit('in')}>in</button></div></div><p className="size-confirm-copy">The selected PDF TrimBox becomes the fixed size for every block. Artwork is never stretched.</p>
       <div className="size-confirm-value"><span>Finished size</span><strong>{display(itemW)} × {display(itemH)}</strong><small>No scaling</small></div>
       <div className="size-confirm-controls"><div><span>Source page</span><div className="size-page-stepper"><button type="button" aria-label="Previous source page" disabled={meta.pageIndex === 0} onClick={() => changeMasterPage(meta.pageIndex - 1)}><ChevronLeft size={15}/></button><select aria-label="Confirm source PDF page" value={meta.pageIndex} onChange={event => changeMasterPage(Number(event.target.value))}>{Array.from({ length: meta.pages }, (_, pageIndex) => <option key={pageIndex} value={pageIndex}>Page {pageIndex + 1} of {meta.pages}</option>)}</select><button type="button" aria-label="Next source page" disabled={meta.pageIndex === meta.pages - 1} onClick={() => changeMasterPage(meta.pageIndex + 1)}><ChevronRight size={15}/></button></div></div><div><span>Direction</span><div className="size-rotation-options">{[0,90,180,270].map(angle => <button type="button" key={angle} aria-pressed={rotation === angle} onClick={() => { setRotation(angle); setMasterConfirmed(false); setMixedPlacements({}); setSelectedCell(null); }}>{angle}°</button>)}</div></div></div>
       <div className="size-confirm-actions"><label className="secondary size-replace"><input type="file" accept="application/pdf" onChange={upload}/><FileUp size={15}/> Choose another PDF</label><button type="button" className="primary-action" onClick={confirmMasterSize}><CheckCircle2 size={16}/> Confirm finished size</button></div>
