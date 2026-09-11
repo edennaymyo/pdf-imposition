@@ -188,6 +188,9 @@ function App() {
   const [mixedPlacements, setMixedPlacements] = useState({});
   const [selectedCell, setSelectedCell] = useState(null);
   const [placementNotice, setPlacementNotice] = useState('');
+  const [draggedOverCell, setDraggedOverCell] = useState(null);
+  const slotUploadInput = useRef(null);
+  const pendingPlacementCell = useRef(null);
 
   const factor = unit === 'in' ? 25.4 : 1;
   const display = value => unit === 'in' ? `${(value / 25.4).toFixed(3)} in` : `${Number(value).toFixed(1)} mm`;
@@ -448,10 +451,12 @@ function App() {
     setSourceFile(file); setSelectedPage(0); setError(''); setMasterConfirmed(false);
     setFillMode('repeat'); setMixedPlacements({}); setSelectedCell(null); setPlacementNotice('');
   };
-  const uploadPlacement = async event => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file || selectedCell === null || !meta) return;
+  const addPlacementFile = async (file, cellIndex = selectedCell) => {
+    if (!file || cellIndex === null || !meta) return;
+    if (!file.name?.toLowerCase().endsWith('.pdf')) {
+      setPlacementNotice('Only PDF artwork can be placed in a block.');
+      return;
+    }
     try {
       const placementMeta = await inspectPdf(file, 0);
       const candidates = [0, 90];
@@ -461,14 +466,42 @@ function App() {
         return;
       }
       const fit = classifyPlacement(itemW, itemH, placementMeta, fittingRotation);
-      setMixedPlacements(current => ({ ...current, [selectedCell]: {
+      setMixedPlacements(current => ({ ...current, [cellIndex]: {
         file, meta: placementMeta, pageIndex: placementMeta.pageIndex, rotation: fittingRotation,
       } }));
+      setSelectedCell(cellIndex);
       setPlacementNotice(fit.status === 'smaller'
         ? `${file.name}: Finished size ${display(fit.width)} × ${display(fit.height)} is smaller and will be centered at 100% scale.`
         : fittingRotation ? `${file.name}: Rotated ${fittingRotation}° to match the confirmed slot.` : '');
       setError('');
     } catch (failure) { setPlacementNotice(`Replacement PDF could not be read: ${failure.message}`); }
+  };
+  const uploadPlacement = async event => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    const cellIndex = pendingPlacementCell.current ?? selectedCell;
+    pendingPlacementCell.current = null;
+    await addPlacementFile(file, cellIndex);
+  };
+  const openPlacementPicker = cellIndex => {
+    pendingPlacementCell.current = cellIndex;
+    setSelectedCell(cellIndex);
+    setPlacementNotice('');
+    changeInspectorTab('artwork');
+    slotUploadInput.current?.click();
+  };
+  const dropPlacement = async (event, cellIndex) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setDraggedOverCell(null);
+    changeInspectorTab('artwork');
+    const file = Array.from(event.dataTransfer.files || []).find(item => item.name.toLowerCase().endsWith('.pdf'));
+    if (!file) {
+      setSelectedCell(cellIndex);
+      setPlacementNotice('Drop a PDF file onto the block.');
+      return;
+    }
+    await addPlacementFile(file, cellIndex);
   };
   const updatePlacementPage = async pageIndex => {
     const placement = mixedPlacements[selectedCell];
@@ -549,10 +582,17 @@ function App() {
               {proofImages[side === 'front' ? 0 : 1] ? <img className="proof-image" src={proofImages[side === 'front' ? 0 : 1]} alt={`${side === 'front' ? 'Front' : 'Back'} exported PDF proof`}/> : <div className="proof-empty">{processing ? 'Generating output proof…' : statusError || (sourceFile && !geometricFit ? 'Front or Back layout does not fit this sheet' : 'Upload a PDF to generate the exact output proof')}</div>}
               {side === 'front' && fillMode === 'mixed' && masterConfirmed && sideGeometry && <div className="placement-overlay" aria-label="Mixed artwork slots">{sideGeometry.cells.map(cell => {
                 const replacement = mixedPlacements[cell.slotIndex];
-                return <button type="button" key={cell.slotIndex} className={`placement-hotspot ${selectedCell === cell.slotIndex ? 'is-selected' : ''} ${replacement ? 'has-replacement' : ''}`}
+                return <button type="button" key={cell.slotIndex} className={`placement-hotspot ${selectedCell === cell.slotIndex ? 'is-selected' : ''} ${replacement ? 'has-replacement' : ''} ${draggedOverCell === cell.slotIndex ? 'is-dragover' : ''}`}
                   style={{ left: `${cell.x / sheetW * 100}%`, top: `${cell.y / sheetH * 100}%`, width: `${sideGeometry.itemW / sheetW * 100}%`, height: `${sideGeometry.itemH / sheetH * 100}%` }}
-                  aria-label={`Slot ${cell.slotIndex + 1}${replacement ? `, ${replacement.file.name}` : ', master artwork'}`}
-                  onClick={() => { setSelectedCell(cell.slotIndex); setPlacementNotice(''); changeInspectorTab('artwork'); }}><span>{cell.slotIndex + 1}</span></button>;
+                  aria-label={`Block ${cell.slotIndex + 1}${replacement ? `, ${replacement.file.name}` : ', master artwork'}. Click or drop a PDF to replace.`}
+                  onClick={() => openPlacementPicker(cell.slotIndex)}
+                  onDragEnter={event => { event.preventDefault(); setDraggedOverCell(cell.slotIndex); }}
+                  onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDraggedOverCell(cell.slotIndex); }}
+                  onDragLeave={() => setDraggedOverCell(current => current === cell.slotIndex ? null : current)}
+                  onDrop={event => dropPlacement(event, cell.slotIndex)}>
+                  <span className="placement-slot-number">{cell.slotIndex + 1}</span>
+                  <span className="placement-slot-action"><FileUp size={14}/>{draggedOverCell === cell.slotIndex ? 'Drop PDF here' : replacement ? 'Replace PDF' : 'Add PDF'}</span>
+                </button>;
               })}</div>}
             </div>
           </div></div>
@@ -583,12 +623,12 @@ function App() {
         </SourceCard>}
         {meta && sizesMatch && duplex && <div className="source-check"><CheckCircle2 size={16}/><span>Finished sizes match<small>{display(itemW)} × {display(itemH)} · no scaling</small></span></div>}
         {meta && masterConfirmed && !duplex && <section className="fill-mode-section"><SegmentedChoice label="Artwork filling" value={fillMode} options={[{ value: 'repeat', label: 'Repeat one artwork' }, { value: 'mixed', label: 'Mixed artworks' }]} onChange={value => { setFillMode(value); setSelectedCell(value === 'mixed' ? 0 : null); setPlacementNotice(''); }}/>
-          {fillMode === 'mixed' && <div className="slot-editor"><div className="slot-editor-heading"><div><b>{selectedCell === null ? 'Choose a slot on the sheet' : `Slot ${selectedCell + 1}`}</b><span>{selectedPlacement ? selectedPlacement.file.name : 'Using master artwork'}</span></div>{selectedPlacement && <button type="button" className="icon-button" aria-label="Clear replacement" onClick={clearPlacement}><Trash2 size={14}/></button>}</div>
-            {selectedCell !== null && <><section className="upload compact-upload slot-upload"><input id="slot-upload" aria-label={`Replace artwork in slot ${selectedCell + 1}`} type="file" accept="application/pdf" onChange={uploadPlacement}/><label htmlFor="slot-upload"><FileUp size={16}/><b>{selectedPlacement ? 'Replace artwork' : 'Add artwork to this slot'}</b></label></section>
+          {fillMode === 'mixed' && <div className="slot-editor"><div className="slot-editor-heading"><div><b>{selectedCell === null ? 'Choose a block on the sheet' : `Block ${selectedCell + 1}`}</b><span>{selectedPlacement ? selectedPlacement.file.name : 'Using master artwork'}</span></div>{selectedPlacement && <button type="button" className="icon-button" aria-label="Clear replacement" onClick={clearPlacement}><Trash2 size={14}/></button>}</div>
+            {selectedCell !== null && <><section className="upload compact-upload slot-upload"><input ref={slotUploadInput} id="slot-upload" aria-label={`Replace artwork in block ${selectedCell + 1}`} type="file" accept="application/pdf" onChange={uploadPlacement}/><label htmlFor="slot-upload"><FileUp size={16}/><b>{selectedPlacement ? 'Replace artwork' : 'Add artwork to this block'}</b></label></section>
               {selectedPlacement && <div className="slot-controls"><label className="select compact-select"><span>PDF page</span><select aria-label="Replacement PDF page" value={selectedPlacement.pageIndex} onChange={event => updatePlacementPage(Number(event.target.value))}>{Array.from({ length: selectedPlacement.meta.pages }, (_, pageIndex) => <option key={pageIndex} value={pageIndex}>Page {pageIndex + 1} of {selectedPlacement.meta.pages}</option>)}</select></label><button type="button" className="secondary" onClick={rotatePlacement}>Rotate 90°</button></div>}
             </>}
             {placementNotice && <p className="placement-notice" role="status">{placementNotice}</p>}
-            <p className="hint">Smaller artwork stays centered at 100% scale. Artwork larger than the confirmed slot is not added.</p>
+            <p className="hint">Click a block on the artboard or drop a PDF onto it. Smaller artwork stays centered at 100% scale.</p>
           </div>}
         </section>}
         <div className="panel-next"><span>Ready to arrange the sheet?</span><button type="button" onClick={() => changeInspectorTab('layout')}>Sheet & grid layout →</button></div>
