@@ -141,8 +141,8 @@ async function renderOutputPdf(bytes) {
 function App() {
   const [rotation, setRotation] = useState(0);
   const [rotationPattern, setRotationPattern] = useState('same');
-  const [cols, setCols] = useState(3);
-  const [rows, setRows] = useState(4);
+  const [cols, setCols] = useState(1);
+  const [rows, setRows] = useState(1);
   const [marks, setMarks] = useState(true);
   const [duploRegMark, setDuploRegMark] = useState(true);
   const [unit, setUnit] = useState('mm');
@@ -442,7 +442,7 @@ function App() {
     clearFront(); setBackFile(null); setBackInput('same'); setBackSelectedPage(1); setInspection(null);
     setRotation(0); setBackRotation(0); setRotationPattern('same');
     setDuplex(false); setProofView('both'); setExportSide('both'); setFlipEdge('long'); setFinishingSide('front');
-    setPaperPreset('13x19'); setSheetW(330.2); setSheetH(482.6); setCols(3); setRows(4);
+    setPaperPreset('13x19'); setSheetW(330.2); setSheetH(482.6); setCols(1); setRows(1);
     setGutterCut(5); setGutterSlit(5); setTopOffset(10); setHorizontalPlacement('center'); setSideTrim(10);
     setMarks(true); setDuploRegMark(true); setBarcodeFile(null); setBarcodeName('');
     setMasterConfirmed(false); setFillMode('repeat'); setMixedPlacements({}); setSelectedCell(null); setPlacementNotice('');
