@@ -1,4 +1,4 @@
-import { degrees, PDFDocument, rgb } from 'pdf-lib';
+import { clip, degrees, endPath, PDFDocument, popGraphicsState, pushGraphicsState, rectangle, rgb } from 'pdf-lib';
 const MM_PER_POINT = 25.4 / 72;
 const POINTS_PER_MM = 72 / 25.4;
 const MIN_SHEET_MM = 210;
@@ -64,18 +64,18 @@ function sourceBleedsForOutput(meta, rotation, desiredOutputBleed) {
   ]));
 }
 
-function drawEmbeddedArtwork(page, embedded, trim, bleed, rotation, trimX, trimY) {
-  const width = trim.width + bleed.left + bleed.right;
-  const height = trim.height + bleed.top + bleed.bottom;
+function drawEmbeddedArtwork(page, embedded, trim, bleed, rotation, trimX, trimY, zoom = 1) {
+  const width = (trim.width + bleed.left + bleed.right) * zoom;
+  const height = (trim.height + bleed.top + bleed.bottom) * zoom;
   const options = { width, height, rotate: degrees(rotation) };
   if (rotation === 90) {
-    page.drawPage(embedded, { ...options, x: trimX + bleed.bottom + trim.height, y: trimY - bleed.left });
+    page.drawPage(embedded, { ...options, x: trimX + (bleed.bottom + trim.height) * zoom, y: trimY - bleed.left * zoom });
   } else if (rotation === 180) {
-    page.drawPage(embedded, { ...options, x: trimX + bleed.left + trim.width, y: trimY + bleed.bottom + trim.height });
+    page.drawPage(embedded, { ...options, x: trimX + (bleed.left + trim.width) * zoom, y: trimY + (bleed.bottom + trim.height) * zoom });
   } else if (rotation === 270) {
-    page.drawPage(embedded, { ...options, x: trimX - bleed.bottom, y: trimY + bleed.left + trim.width });
+    page.drawPage(embedded, { ...options, x: trimX - bleed.bottom * zoom, y: trimY + (bleed.left + trim.width) * zoom });
   } else {
-    page.drawPage(embedded, { ...options, x: trimX - bleed.left, y: trimY - bleed.bottom });
+    page.drawPage(embedded, { ...options, x: trimX - bleed.left * zoom, y: trimY - bleed.bottom * zoom });
   }
 }
 
@@ -238,9 +238,11 @@ export function planJob(front, back, settings) {
       const destRow = isBack && flipEdge === 'short' ? rows - 1 - row : row;
       const destCol = isBack && flipEdge === 'long' ? cols - 1 - col : col;
       const slotIndex = row * cols + col;
-      const placement = !isBack && settings.fillMode === 'mixed' ? settings.mixedPlacements?.[slotIndex] : null;
+      const placements = isBack ? settings.mixedBackPlacements : settings.mixedPlacements;
+      const placement = settings.fillMode === 'mixed' ? placements?.[slotIndex] : null;
       const sourceMeta = placement?.meta || meta;
       const angle = placement ? placement.rotation ?? 0 : cellRotation(baseRotation, rotationPattern, row, col);
+      const zoom = Math.max(1, Math.min(2, placement?.zoom ?? 1));
       const fit = classifyPlacement(itemW, itemH, sourceMeta, angle);
       if (fit.status === 'oversized') throw new Error(`Artwork in slot ${slotIndex + 1} is larger than the confirmed item size.`);
       const availability = outputBleedAvailability(sourceMeta, angle);
@@ -251,16 +253,21 @@ export function planJob(front, back, settings) {
       const cellX = x + destCol * (itemW + gutterSlit);
       const cellY = y + destRow * (itemH + gutterCut);
       cells.push({ row: destRow, col: destCol, partnerRow: row, partnerCol: col, slotIndex,
-        rotation: angle, sourceMeta, placementStatus: fit.status,
-        x: cellX, y: cellY, artX: cellX + fit.offsetX, artY: cellY + fit.offsetY,
-        artW: fit.width, artH: fit.height });
+        rotation: angle, zoom, sourceMeta, placementStatus: fit.status,
+        x: cellX, y: cellY, artX: cellX + (itemW - fit.width * zoom) / 2, artY: cellY + (itemH - fit.height * zoom) / 2,
+        artW: fit.width * zoom, artH: fit.height * zoom });
     }
-    for (const cell of cells) cell.bleed = sourceBleedsForOutput(cell.sourceMeta, cell.rotation, {
-      top: cell.row === 0 ? outer.top : gutterCut / 2,
-      bottom: cell.row === rows - 1 ? outer.bottom : gutterCut / 2,
-      left: cell.col === 0 ? outer.left : gutterSlit / 2,
-      right: cell.col === cols - 1 ? outer.right : gutterSlit / 2,
-    });
+    for (const cell of cells) {
+      const desiredOutputBleed = {
+        top: cell.row === 0 ? outer.top : gutterCut / 2,
+        bottom: cell.row === rows - 1 ? outer.bottom : gutterCut / 2,
+        left: cell.col === 0 ? outer.left : gutterSlit / 2,
+        right: cell.col === cols - 1 ? outer.right : gutterSlit / 2,
+      };
+      const availability = outputBleedAvailability(cell.sourceMeta, cell.rotation);
+      cell.outputBleed = Object.fromEntries(Object.entries(desiredOutputBleed).map(([side, value]) => [side, Math.min(value, availability[side] * cell.zoom)]));
+      cell.bleed = sourceBleedsForOutput(cell.sourceMeta, cell.rotation, desiredOutputBleed);
+    }
     const fits = x - outer.left >= -0.001 && x + width + outer.right <= sheetW + 0.001
       && y - outer.top >= -0.001 && y + height + outer.bottom <= sheetH + 0.001;
     const marksOnSheet = !settings.marks || (x >= MARK_OFFSET_MM + MARK_LENGTH_MM
@@ -300,9 +307,8 @@ export async function buildJobPdf(front, back, settings) {
     const embeddedByInput = new Map();
     for (const cell of geometry.cells) {
       const defaultInput = geometry.side === 'front' ? front : back;
-      const input = geometry.side === 'front' && settings.fillMode === 'mixed'
-        ? settings.mixedPlacements?.[cell.slotIndex] || defaultInput
-        : defaultInput;
+      const placements = geometry.side === 'back' ? settings.mixedBackPlacements : settings.mixedPlacements;
+      const input = settings.fillMode === 'mixed' ? placements?.[cell.slotIndex] || defaultInput : defaultInput;
       let source = documents.get(input.file);
       if (!source) {
         source = await PDFDocument.load(await input.file.arrayBuffer(), { updateMetadata: false });
@@ -322,8 +328,18 @@ export async function buildJobPdf(front, back, settings) {
         });
         fileEmbeds.set(cropKey, embedded);
       }
+      if (cell.zoom !== 1) {
+        const clipBox = cell.outputBleed;
+        outputPage.pushOperators(pushGraphicsState(), rectangle(
+          (cell.x - clipBox.left) * POINTS_PER_MM,
+          (settings.sheetH - cell.y - geometry.itemH - clipBox.bottom) * POINTS_PER_MM,
+          (geometry.itemW + clipBox.left + clipBox.right) * POINTS_PER_MM,
+          (geometry.itemH + clipBox.top + clipBox.bottom) * POINTS_PER_MM,
+        ), clip(), endPath());
+      }
       drawEmbeddedArtwork(outputPage, embedded, trim, bleed, cell.rotation,
-        cell.artX * POINTS_PER_MM, (settings.sheetH - cell.artY - cell.artH) * POINTS_PER_MM);
+        cell.artX * POINTS_PER_MM, (settings.sheetH - cell.artY - cell.artH) * POINTS_PER_MM, cell.zoom);
+      if (cell.zoom !== 1) outputPage.pushOperators(popGraphicsState());
     }
     const barcodeOnSide = Boolean(settings.barcodeFile) && finishingOnSide(geometry.side, settings);
     if (settings.marks) drawProductionMarks(outputPage, {

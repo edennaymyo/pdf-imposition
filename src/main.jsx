@@ -187,11 +187,14 @@ function App() {
   const [sizeConfirmOpen, setSizeConfirmOpen] = useState(false);
   const [fillMode, setFillMode] = useState('repeat');
   const [mixedPlacements, setMixedPlacements] = useState({});
+  const [mixedBackPlacements, setMixedBackPlacements] = useState({});
   const [selectedCell, setSelectedCell] = useState(null);
+  const [selectedPlacementSide, setSelectedPlacementSide] = useState('front');
   const [placementNotice, setPlacementNotice] = useState('');
   const [draggedOverCell, setDraggedOverCell] = useState(null);
   const slotUploadInput = useRef(null);
   const pendingPlacementCell = useRef(null);
+  const pendingPlacementSide = useRef('front');
 
   const factor = unit === 'in' ? 25.4 : 1;
   const display = value => unit === 'in' ? `${(value / 25.4).toFixed(3)} in` : `${Number(value).toFixed(1)} mm`;
@@ -205,10 +208,10 @@ function App() {
   const settings = useMemo(() => ({
     rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset,
     horizontalPlacement, sideTrim, marks, duploRegMark, barcodeFile,
-    duplex, backRotation, flipEdge, finishingSide, fillMode, mixedPlacements,
+    duplex, backRotation, flipEdge, finishingSide, fillMode, mixedPlacements, mixedBackPlacements,
   }), [rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset,
     horizontalPlacement, sideTrim, marks, duploRegMark, barcodeFile, duplex, backRotation, flipEdge, finishingSide,
-    fillMode, mixedPlacements]);
+    fillMode, mixedPlacements, mixedBackPlacements]);
   const planned = useMemo(() => {
     try { return { plan: planJob(meta, backMeta, settings), error: '' }; }
     catch (failure) { return { plan: null, error: failure.message }; }
@@ -235,11 +238,16 @@ function App() {
   const barcodeNeedsAttention = Boolean(barcodeName && !barcodeFile);
   const sheetLabel = paperPreset === '13x19' ? '13 × 19 in' : paperPreset === '12.4x18.4' ? '12.4 × 18.4 in' : `${display(sheetW)} × ${display(sheetH)}`;
   const backSize = backMeta ? finishedSize(backMeta, backRotation) : null;
-  const selectedPlacement = selectedCell === null ? null : mixedPlacements[selectedCell] || null;
-  const selectedBlockFile = selectedPlacement?.file || sourceFile;
-  const selectedBlockMeta = selectedPlacement?.meta || meta;
-  const selectedBlockPage = selectedPlacement?.pageIndex ?? meta?.pageIndex ?? 0;
-  const selectedBlockRotation = selectedPlacement?.rotation ?? rotation;
+  const selectedPlacementMap = selectedPlacementSide === 'back' ? mixedBackPlacements : mixedPlacements;
+  const selectedPlacement = selectedCell === null ? null : selectedPlacementMap[selectedCell] || null;
+  const selectedMasterFile = selectedPlacementSide === 'back' ? effectiveBackFile : sourceFile;
+  const selectedMasterMeta = selectedPlacementSide === 'back' ? backMeta : meta;
+  const selectedMasterRotation = selectedPlacementSide === 'back' ? backRotation : rotation;
+  const selectedBlockFile = selectedPlacement?.file || selectedMasterFile;
+  const selectedBlockMeta = selectedPlacement?.meta || selectedMasterMeta;
+  const selectedBlockPage = selectedPlacement?.pageIndex ?? selectedMasterMeta?.pageIndex ?? 0;
+  const selectedBlockRotation = selectedPlacement?.rotation ?? selectedMasterRotation;
+  const selectedBlockZoom = selectedPlacement?.zoom ?? 1;
   const sizesMatch = Boolean(meta && (!duplex || (backSize && Math.abs(itemW - backSize.width) <= 0.01 && Math.abs(itemH - backSize.height) <= 0.01)));
   const issueText = statusError || (barcodeNeedsAttention ? 'Reconnect the selected barcode file.' : sourceFile && meta && !masterConfirmed ? 'Confirm the finished item size before arranging the sheet.' : sourceFile && !processing && !geometricFit ? 'This layout does not fit. Review sheet size and repeat count.' : '');
   const issueTab = barcodeNeedsAttention ? 'duplo' : !meta || !masterConfirmed || (duplex && !sizesMatch) || inspectionError ? 'artwork' : 'layout';
@@ -449,7 +457,7 @@ function App() {
 
   const clearFront = () => {
     setSourceFile(null); setSelectedPage(0); setProof(null); setError(''); setMasterConfirmed(false);
-    setFillMode('repeat'); setMixedPlacements({}); setSelectedCell(null); setPlacementNotice('');
+    setFillMode('repeat'); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); setPlacementNotice('');
   };
   const newJob = () => {
     clearFront(); setBackFile(null); setBackInput('same'); setBackSelectedPage(1); setInspection(null);
@@ -458,7 +466,7 @@ function App() {
     setPaperPreset('13x19'); setSheetW(330.2); setSheetH(482.6); setCols(1); setRows(1);
     setGutterCut(5); setGutterSlit(5); setTopOffset(10); setHorizontalPlacement('center'); setSideTrim(10);
     setMarks(true); setDuploRegMark(true); setBarcodeFile(null); setBarcodeName('');
-    setMasterConfirmed(false); setFillMode('repeat'); setMixedPlacements({}); setSelectedCell(null); setPlacementNotice('');
+    setMasterConfirmed(false); setFillMode('repeat'); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); setPlacementNotice('');
     setPresetName(''); setSelectedPresetId(''); setPresetsOpen(false); setBarcodeOpen(false);
     setEditingSide('front'); changeInspectorTab('artwork'); setExportOpen(false);
   };
@@ -471,27 +479,31 @@ function App() {
     event.target.value = '';
     if (!file) return;
     setSourceFile(file); setSelectedPage(0); setError(''); setMasterConfirmed(false);
-    setFillMode('repeat'); setMixedPlacements({}); setSelectedCell(null); setPlacementNotice('');
+    setFillMode('repeat'); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); setPlacementNotice('');
   };
-  const addPlacementFile = async (file, cellIndex = selectedCell) => {
-    if (!file || cellIndex === null || !meta) return;
+  const updateSidePlacements = (side, updater) => (side === 'back' ? setMixedBackPlacements : setMixedPlacements)(updater);
+  const addPlacementFile = async (file, cellIndex = selectedCell, side = selectedPlacementSide) => {
+    const masterMeta = side === 'back' ? backMeta : meta;
+    const masterRotation = side === 'back' ? backRotation : rotation;
+    if (!file || cellIndex === null || !masterMeta) return;
     if (!file.name?.toLowerCase().endsWith('.pdf')) {
       setPlacementNotice('Only PDF artwork can be placed in a block.');
       return;
     }
     try {
       const placementMeta = await inspectPdf(file, 0);
-      const candidates = [0, 90];
+      const candidates = [...new Set([masterRotation, (masterRotation + 180) % 360, (masterRotation + 90) % 360, (masterRotation + 270) % 360])];
       const fittingRotation = candidates.find(angle => classifyPlacement(itemW, itemH, placementMeta, angle).status !== 'oversized');
       if (fittingRotation === undefined) {
         setPlacementNotice(`${file.name}: Finished size is larger than the confirmed ${display(itemW)} × ${display(itemH)} slot.`);
         return;
       }
       const fit = classifyPlacement(itemW, itemH, placementMeta, fittingRotation);
-      setMixedPlacements(current => ({ ...current, [cellIndex]: {
-        file, meta: placementMeta, pageIndex: placementMeta.pageIndex, rotation: fittingRotation,
+      updateSidePlacements(side, current => ({ ...current, [cellIndex]: {
+        file, meta: placementMeta, pageIndex: placementMeta.pageIndex, rotation: fittingRotation, zoom: 1,
       } }));
       setSelectedCell(cellIndex);
+      setSelectedPlacementSide(side);
       setPlacementNotice(fit.status === 'smaller'
         ? `${file.name}: Finished size ${display(fit.width)} × ${display(fit.height)} is smaller and will be centered at 100% scale.`
         : fittingRotation ? `${file.name}: Rotated ${fittingRotation}° to match the confirmed slot.` : '');
@@ -502,20 +514,24 @@ function App() {
     const file = event.target.files?.[0];
     event.target.value = '';
     const cellIndex = pendingPlacementCell.current ?? selectedCell;
+    const side = pendingPlacementSide.current ?? selectedPlacementSide;
     pendingPlacementCell.current = null;
-    await addPlacementFile(file, cellIndex);
+    pendingPlacementSide.current = 'front';
+    await addPlacementFile(file, cellIndex, side);
   };
-  const selectPlacementCell = cellIndex => {
+  const selectPlacementCell = (cellIndex, side = 'front') => {
     setSelectedCell(cellIndex);
+    setSelectedPlacementSide(side);
     setPlacementNotice('');
     changeInspectorTab('artwork');
   };
   const changePlacementFile = () => {
     if (selectedCell === null) return;
     pendingPlacementCell.current = selectedCell;
+    pendingPlacementSide.current = selectedPlacementSide;
     slotUploadInput.current?.click();
   };
-  const dropPlacement = async (event, cellIndex) => {
+  const dropPlacement = async (event, cellIndex, side) => {
     event.preventDefault();
     event.stopPropagation();
     setDraggedOverCell(null);
@@ -523,10 +539,11 @@ function App() {
     const file = Array.from(event.dataTransfer.files || []).find(item => item.name.toLowerCase().endsWith('.pdf'));
     if (!file) {
       setSelectedCell(cellIndex);
+      setSelectedPlacementSide(side);
       setPlacementNotice('Drop a PDF file onto the block.');
       return;
     }
-    await addPlacementFile(file, cellIndex);
+    await addPlacementFile(file, cellIndex, side);
   };
   const updatePlacementPage = async pageIndex => {
     if (selectedCell === null || !selectedBlockFile || !selectedBlockMeta) return;
@@ -534,28 +551,33 @@ function App() {
       const placementMeta = await inspectPdf(selectedBlockFile, pageIndex);
       const fit = classifyPlacement(itemW, itemH, placementMeta, selectedBlockRotation);
       if (fit.status === 'oversized') { setPlacementNotice(`PDF page ${pageIndex + 1} is larger than the confirmed slot.`); return; }
-      setMixedPlacements(current => ({ ...current, [selectedCell]: { file: selectedBlockFile, meta: placementMeta, pageIndex: placementMeta.pageIndex, rotation: selectedBlockRotation } }));
-      setPlacementNotice(fit.status === 'smaller' ? `PDF page ${pageIndex + 1} is smaller and will be centered at 100% scale.` : `Block ${selectedCell + 1} now uses Page ${pageIndex + 1}.`);
+      updateSidePlacements(selectedPlacementSide, current => ({ ...current, [selectedCell]: { file: selectedBlockFile, meta: placementMeta, pageIndex: placementMeta.pageIndex, rotation: selectedBlockRotation, zoom: selectedBlockZoom } }));
+      setPlacementNotice(fit.status === 'smaller' ? `PDF page ${pageIndex + 1} is smaller and will be centered.` : `${selectedPlacementSide === 'back' ? 'Back' : 'Front'} Block ${selectedCell + 1} now uses Page ${pageIndex + 1}.`);
     } catch (failure) { setPlacementNotice(`PDF page could not be read: ${failure.message}`); }
   };
-  const rotatePlacement = () => {
+  const updatePlacementRotation = nextRotation => {
     if (selectedCell === null || !selectedBlockFile || !selectedBlockMeta) return;
-    const nextRotation = (selectedBlockRotation + 90) % 360;
     const fit = classifyPlacement(itemW, itemH, selectedBlockMeta, nextRotation);
     if (fit.status === 'oversized') { setPlacementNotice('This rotation would make the artwork larger than the confirmed slot.'); return; }
-    setMixedPlacements(current => ({ ...current, [selectedCell]: { file: selectedBlockFile, meta: selectedBlockMeta, pageIndex: selectedBlockPage, rotation: nextRotation } }));
-    setPlacementNotice(fit.status === 'smaller' ? `Rotated ${nextRotation}°. Smaller artwork remains centered at 100% scale.` : '');
+    updateSidePlacements(selectedPlacementSide, current => ({ ...current, [selectedCell]: { file: selectedBlockFile, meta: selectedBlockMeta, pageIndex: selectedBlockPage, rotation: nextRotation, zoom: selectedBlockZoom } }));
+    setPlacementNotice(fit.status === 'smaller' ? `Rotated ${nextRotation}°. Smaller artwork remains centered.` : `Rotated ${nextRotation}°.`);
+  };
+  const updatePlacementZoom = zoom => {
+    if (selectedCell === null || !selectedBlockFile || !selectedBlockMeta) return;
+    const nextZoom = Math.max(1, Math.min(2, Math.round(zoom * 10) / 10));
+    updateSidePlacements(selectedPlacementSide, current => ({ ...current, [selectedCell]: { file: selectedBlockFile, meta: selectedBlockMeta, pageIndex: selectedBlockPage, rotation: selectedBlockRotation, zoom: nextZoom } }));
+    setPlacementNotice(nextZoom === 1 ? 'Zoom reset to 100%.' : `Artwork zoom ${Math.round(nextZoom * 100)}%. Output is center-cropped to this block.`);
   };
   const clearPlacement = () => {
     if (selectedCell === null) return;
-    setMixedPlacements(current => { const next = { ...current }; delete next[selectedCell]; return next; });
-    setPlacementNotice('This slot now uses the master artwork.');
+    updateSidePlacements(selectedPlacementSide, current => { const next = { ...current }; delete next[selectedCell]; return next; });
+    setPlacementNotice(`${selectedPlacementSide === 'back' ? 'Back' : 'Front'} block now uses the master artwork.`);
   };
   const changeMasterPage = pageIndex => {
     if (!meta) return;
     setSelectedPage(Math.max(0, Math.min(meta.pages - 1, pageIndex)));
     setMasterConfirmed(false);
-    setMixedPlacements({});
+    setMixedPlacements({}); setMixedBackPlacements({});
     setSelectedCell(null);
     setError('');
   };
@@ -568,7 +590,7 @@ function App() {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
-    setBackFile(file); setBackSelectedPage(0); setError('');
+    setBackFile(file); setBackSelectedPage(0); setMixedBackPlacements({}); setError('');
   };
   const downloadOutput = async () => {
     if (!outputBytes || processing || !canExport) return;
@@ -619,25 +641,28 @@ function App() {
             {index === 0 && <><div className="sheet-dimension dimension-width" aria-label={`Sheet width ${displaySheetInches(sheetW)}`}><span>{displaySheetInches(sheetW)}</span></div><div className="sheet-dimension dimension-height" aria-label={`Sheet height ${displaySheetInches(sheetH)}`}><span>{displaySheetInches(sheetH)}</span></div></>}
             <div className="sheet proof-sheet" style={{ aspectRatio: sheetW / sheetH, '--sheet-ratio': sheetW / sheetH }}>
               {proofImages[side === 'front' ? 0 : 1] ? <img className="proof-image" src={proofImages[side === 'front' ? 0 : 1]} alt={`${side === 'front' ? 'Front' : 'Back'} exported PDF proof`}/> : <div className="proof-empty">{processing ? 'Generating output proof…' : statusError || (sourceFile && !geometricFit ? 'Front or Back layout does not fit this sheet' : 'Upload a PDF to generate the exact output proof')}</div>}
-              {side === 'front' && fillMode === 'mixed' && masterConfirmed && sideGeometry && <div className="placement-overlay" aria-label="Mixed artwork slots">{sideGeometry.cells.map(cell => {
-                const replacement = mixedPlacements[cell.slotIndex];
-                return <button type="button" key={cell.slotIndex} className={`placement-hotspot ${selectedCell === cell.slotIndex ? 'is-selected' : ''} ${replacement ? 'has-replacement' : ''} ${draggedOverCell === cell.slotIndex ? 'is-dragover' : ''}`}
+              {fillMode === 'mixed' && masterConfirmed && sideGeometry && <div className="placement-overlay" aria-label={`${side === 'back' ? 'Back' : 'Front'} mixed artwork slots`}>{sideGeometry.cells.map(cell => {
+                const sidePlacements = side === 'back' ? mixedBackPlacements : mixedPlacements;
+                const replacement = sidePlacements[cell.slotIndex];
+                const cellKey = `${side}-${cell.slotIndex}`;
+                return <button type="button" key={cell.slotIndex} className={`placement-hotspot ${selectedCell === cell.slotIndex && selectedPlacementSide === side ? 'is-selected' : ''} ${replacement ? 'has-replacement' : ''} ${draggedOverCell === cellKey ? 'is-dragover' : ''}`}
                   style={{ left: `${cell.x / sheetW * 100}%`, top: `${cell.y / sheetH * 100}%`, width: `${sideGeometry.itemW / sheetW * 100}%`, height: `${sideGeometry.itemH / sheetH * 100}%` }}
-                  aria-label={`Block ${cell.slotIndex + 1}${replacement ? `, ${replacement.file.name}` : ', master artwork'}. Click to edit or drop a PDF to replace.`}
-                  onClick={() => selectPlacementCell(cell.slotIndex)}
-                  onDragEnter={event => { event.preventDefault(); setDraggedOverCell(cell.slotIndex); }}
-                  onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDraggedOverCell(cell.slotIndex); }}
-                  onDragLeave={() => setDraggedOverCell(current => current === cell.slotIndex ? null : current)}
-                  onDrop={event => dropPlacement(event, cell.slotIndex)}>
+                  aria-label={`${side === 'back' ? 'Back' : 'Front'} block ${cell.slotIndex + 1}${replacement ? `, ${replacement.file.name}` : ', master artwork'}. Click to edit or drop a PDF to replace.`}
+                  onClick={() => selectPlacementCell(cell.slotIndex, side)}
+                  onDragEnter={event => { event.preventDefault(); setDraggedOverCell(cellKey); }}
+                  onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDraggedOverCell(cellKey); }}
+                  onDragLeave={() => setDraggedOverCell(current => current === cellKey ? null : current)}
+                  onDrop={event => dropPlacement(event, cell.slotIndex, side)}>
                   <span className="placement-slot-number">{cell.slotIndex + 1}</span>
-                  <span className="placement-slot-action"><FileUp size={14}/>{draggedOverCell === cell.slotIndex ? 'Drop PDF here' : 'Edit block'}</span>
+                  <span className="placement-slot-action"><FileUp size={14}/>{draggedOverCell === cellKey ? 'Drop PDF here' : 'Edit block'}</span>
                 </button>;
               })}</div>}
-              {side === 'front' && fillMode === 'mixed' && masterConfirmed && selectedGeometryCell && <div className={`placement-context-toolbar ${toolbarBelow ? 'is-below' : ''}`}
-                style={{ left: '50%', top: `${(toolbarBelow ? selectedGeometryCell.y + sideGeometry.itemH : selectedGeometryCell.y) / sheetH * 100}%` }} role="group" aria-label={`Edit block ${selectedCell + 1}`}>
-                <div className="placement-context-title"><b>Block {selectedCell + 1}</b><span>{selectedPlacement ? selectedPlacement.file.name : `Master · ${sourceFile?.name || 'artwork'}`}</span></div>
+              {selectedPlacementSide === side && fillMode === 'mixed' && masterConfirmed && selectedGeometryCell && <div className={`placement-context-toolbar ${toolbarBelow ? 'is-below' : ''}`}
+                style={{ left: '50%', top: `${(toolbarBelow ? selectedGeometryCell.y + sideGeometry.itemH : selectedGeometryCell.y) / sheetH * 100}%` }} role="group" aria-label={`Edit ${side} block ${selectedCell + 1}`}>
+                <div className="placement-context-title"><b>{side === 'back' ? 'Back' : 'Front'} · Block {selectedCell + 1}</b><span>{selectedPlacement ? selectedPlacement.file.name : `Master · ${selectedMasterFile?.name || 'artwork'}`}</span></div>
                 {selectedBlockMeta && <div className="placement-page-controls"><button type="button" aria-label="Previous PDF page" disabled={selectedBlockPage === 0} onClick={() => updatePlacementPage(selectedBlockPage - 1)}><ChevronLeft size={14}/></button><select aria-label="Block PDF page" value={selectedBlockPage} onChange={event => updatePlacementPage(Number(event.target.value))}>{Array.from({ length: selectedBlockMeta.pages }, (_, pageIndex) => <option key={pageIndex} value={pageIndex}>Page {pageIndex + 1} of {selectedBlockMeta.pages}</option>)}</select><button type="button" aria-label="Next PDF page" disabled={selectedBlockPage === selectedBlockMeta.pages - 1} onClick={() => updatePlacementPage(selectedBlockPage + 1)}><ChevronRight size={14}/></button></div>}
-                <div className="placement-context-actions"><button type="button" onClick={changePlacementFile}><FileUp size={13}/> Change PDF</button><button type="button" onClick={rotatePlacement}><RotateCw size={13}/> 90°</button><button type="button" disabled={!selectedPlacement} onClick={clearPlacement}><RefreshCcw size={13}/> Reset</button><button type="button" className="context-close" aria-label="Close block editor" onClick={() => setSelectedCell(null)}><X size={14}/></button></div>
+                <div className="placement-transform-controls"><label><span>Rotate</span><select aria-label="Block rotation" value={selectedBlockRotation} onChange={event => updatePlacementRotation(Number(event.target.value))}>{[0, 90, 180, 270].map(angle => <option key={angle} value={angle} disabled={classifyPlacement(itemW, itemH, selectedBlockMeta, angle).status === 'oversized'}>{angle}°</option>)}</select></label><div className="placement-zoom" aria-label="Block artwork zoom"><span>Zoom</span><button type="button" aria-label="Zoom artwork out" disabled={selectedBlockZoom <= 1} onClick={() => updatePlacementZoom(selectedBlockZoom - .1)}>−</button><b>{Math.round(selectedBlockZoom * 100)}%</b><button type="button" aria-label="Zoom artwork in" disabled={selectedBlockZoom >= 2} onClick={() => updatePlacementZoom(selectedBlockZoom + .1)}>+</button></div></div>
+                <div className="placement-context-actions"><button type="button" onClick={changePlacementFile}><FileUp size={13}/> Change PDF</button><button type="button" disabled={!selectedPlacement} onClick={clearPlacement}><RefreshCcw size={13}/> Reset side</button><button type="button" className="context-close" aria-label="Close block editor" onClick={() => setSelectedCell(null)}><X size={14}/></button></div>
               </div>}
             </div>
           </div></div>
@@ -652,25 +677,25 @@ function App() {
       <div className="inspector-body" ref={inspectorScroll}>
       <section className="artwork-panel" role="tabpanel" id="panel-artwork" aria-labelledby="tab-artwork" hidden={inspectorTab !== 'artwork'}>
         <div className="panel-heading"><span className="eyebrow">01 / SOURCE</span><h1>Choose your artwork</h1><p className="section-intro">Set each side’s PDF page and direction here.</p></div>
-        <SegmentedChoice label="Printed sides" name="Job mode" value={duplex ? 'duplex' : 'single'} options={[{ value: 'single', label: 'Single side' }, { value: 'duplex', label: 'Double side' }]} onChange={value => { setDuplex(value === 'duplex'); setFillMode('repeat'); setMixedPlacements({}); setSelectedCell(null); setEditingSide('front'); setError(''); }}/>
+        <SegmentedChoice label="Printed sides" name="Job mode" value={duplex ? 'duplex' : 'single'} options={[{ value: 'single', label: 'Single side' }, { value: 'duplex', label: 'Double side' }]} onChange={value => { setDuplex(value === 'duplex'); setFillMode('repeat'); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); setSelectedPlacementSide('front'); setEditingSide('front'); setError(''); }}/>
         <SourceCard side="Front" expanded={editingSide === 'front'} onToggle={() => setEditingSide(editingSide === 'front' ? '' : 'front')} fileName={sourceFile?.name} pageIndex={meta?.pageIndex ?? selectedPage} angle={rotation} dimensions={meta ? `${display(itemW)} × ${display(itemH)}` : ''}>
           <section className="upload compact-upload"><input id="upload" aria-label="Upload front PDF" type="file" accept="application/pdf" onChange={upload}/><label htmlFor="upload"><FileUp size={17}/><b>{sourceFile ? 'Replace PDF' : 'Upload PDF'}</b></label>{sourceFile && <button className="clear" onClick={clearFront}><X size={14}/> Remove</button>}</section>
-          {meta && <label className="select compact-select"><span>Source PDF page</span><select aria-label="Front page" value={meta.pageIndex} onChange={event => { setSelectedPage(Number(event.target.value)); setMasterConfirmed(false); setMixedPlacements({}); setSelectedCell(null); setError(''); }}>{Array.from({ length: meta.pages }, (_, index) => <option key={index} value={index}>PDF page {index + 1} of {meta.pages}</option>)}</select></label>}
-          <ArtworkDirection side="Front" value={rotation} onChange={angle => { setRotation(angle); setMasterConfirmed(false); setMixedPlacements({}); setSelectedCell(null); }}/>
+          {meta && <label className="select compact-select"><span>Source PDF page</span><select aria-label="Front page" value={meta.pageIndex} onChange={event => { setSelectedPage(Number(event.target.value)); setMasterConfirmed(false); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); setError(''); }}>{Array.from({ length: meta.pages }, (_, index) => <option key={index} value={index}>PDF page {index + 1} of {meta.pages}</option>)}</select></label>}
+          <ArtworkDirection side="Front" value={rotation} onChange={angle => { setRotation(angle); setMasterConfirmed(false); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); }}/>
           {meta && <button type="button" className={`master-size-confirm ${masterConfirmed ? 'is-confirmed' : ''}`} onClick={() => setSizeConfirmOpen(true)}>{masterConfirmed ? <CheckCircle2 size={15}/> : <AlertTriangle size={15}/>}<span>{masterConfirmed ? 'Finished size confirmed' : 'Confirm finished size'}<small>{display(itemW)} × {display(itemH)} · no scaling{masterConfirmed ? ' · Change' : ''}</small></span></button>}
         </SourceCard>
         {duplex && <SourceCard side="Back" expanded={editingSide === 'back'} onToggle={() => setEditingSide(editingSide === 'back' ? '' : 'back')} fileName={effectiveBackFile?.name} pageIndex={backMeta?.pageIndex ?? backSelectedPage} angle={backRotation} dimensions={backSize ? `${display(backSize.width)} × ${display(backSize.height)}` : ''}>
-          <SegmentedChoice label="Back source" value={backInput} options={[{ value: 'same', label: 'Same PDF' }, { value: 'separate', label: 'Separate PDF' }]} onChange={value => { setBackInput(value); setBackSelectedPage(value === 'same' ? 1 : 0); setError(''); }}/>
-          {backInput === 'separate' && <><section className="upload compact-upload"><input id="upload-back" aria-label="Upload back PDF" type="file" accept="application/pdf" onChange={uploadBack}/><label htmlFor="upload-back"><FileUp size={17}/><b>{backFile ? 'Replace back PDF' : 'Upload back PDF'}</b></label>{backFile && <button className="clear" onClick={() => { setBackFile(null); setError(''); }}><X size={14}/> Remove</button>}</section>{backFile && <p className="source-name" title={backFile.name}>{backFile.name}</p>}</>}
-          {backMeta && <label className="select compact-select"><span>Source PDF page</span><select aria-label="Back page" value={backMeta.pageIndex} onChange={event => { setBackSelectedPage(Number(event.target.value)); setError(''); }}>{Array.from({ length: backMeta.pages }, (_, index) => <option key={index} value={index}>PDF page {index + 1} of {backMeta.pages}</option>)}</select></label>}
+          <SegmentedChoice label="Back source" value={backInput} options={[{ value: 'same', label: 'Same PDF' }, { value: 'separate', label: 'Separate PDF' }]} onChange={value => { setBackInput(value); setBackSelectedPage(value === 'same' ? 1 : 0); setMixedBackPlacements({}); setError(''); }}/>
+          {backInput === 'separate' && <><section className="upload compact-upload"><input id="upload-back" aria-label="Upload back PDF" type="file" accept="application/pdf" onChange={uploadBack}/><label htmlFor="upload-back"><FileUp size={17}/><b>{backFile ? 'Replace back PDF' : 'Upload back PDF'}</b></label>{backFile && <button className="clear" onClick={() => { setBackFile(null); setMixedBackPlacements({}); setError(''); }}><X size={14}/> Remove</button>}</section>{backFile && <p className="source-name" title={backFile.name}>{backFile.name}</p>}</>}
+          {backMeta && <label className="select compact-select"><span>Source PDF page</span><select aria-label="Back page" value={backMeta.pageIndex} onChange={event => { setBackSelectedPage(Number(event.target.value)); setMixedBackPlacements({}); setError(''); }}>{Array.from({ length: backMeta.pages }, (_, index) => <option key={index} value={index}>PDF page {index + 1} of {backMeta.pages}</option>)}</select></label>}
           {backInput === 'same' && meta?.pages === 1 && <p className="hint">This PDF has one page. Both sides use Page 1; upload a separate back if needed.</p>}
-          <ArtworkDirection side="Back" value={backRotation} onChange={setBackRotation}/>
+          <ArtworkDirection side="Back" value={backRotation} onChange={angle => { setBackRotation(angle); setMixedBackPlacements({}); }}/>
         </SourceCard>}
         {meta && sizesMatch && duplex && <div className="source-check"><CheckCircle2 size={16}/><span>Finished sizes match<small>{display(itemW)} × {display(itemH)} · no scaling</small></span></div>}
-        {meta && masterConfirmed && !duplex && <section className="fill-mode-section"><SegmentedChoice label="Artwork filling" value={fillMode} options={[{ value: 'repeat', label: 'Repeat one artwork' }, { value: 'mixed', label: 'Mixed artworks' }]} onChange={value => { setFillMode(value); setSelectedCell(value === 'mixed' ? 0 : null); setPlacementNotice(''); }}/>
-          {fillMode === 'mixed' && <div className="slot-editor"><input ref={slotUploadInput} className="visually-hidden" aria-label="Choose replacement artwork PDF" type="file" accept="application/pdf" onChange={uploadPlacement}/><div className="slot-editor-heading"><div><b>{selectedCell === null ? 'Select a block on the sheet' : `Block ${selectedCell + 1} selected`}</b><span>{selectedPlacement ? `${selectedPlacement.file.name} · Page ${selectedPlacement.pageIndex + 1}` : selectedCell === null ? 'Click to edit · drop a PDF to replace' : `Master PDF · Page ${(meta?.pageIndex ?? 0) + 1}`}</span></div></div>
+        {meta && masterConfirmed && sizesMatch && <section className="fill-mode-section"><SegmentedChoice label="Artwork filling" value={fillMode} options={[{ value: 'repeat', label: 'Repeat one artwork' }, { value: 'mixed', label: 'Mixed artworks' }]} onChange={value => { setFillMode(value); setSelectedCell(value === 'mixed' ? 0 : null); setSelectedPlacementSide('front'); setPlacementNotice(''); }}/>
+          {fillMode === 'mixed' && <div className="slot-editor"><input ref={slotUploadInput} className="visually-hidden" aria-label="Choose replacement artwork PDF" type="file" accept="application/pdf" onChange={uploadPlacement}/><div className="slot-editor-heading"><div><b>{selectedCell === null ? 'Select a block on the sheet' : `${selectedPlacementSide === 'back' ? 'Back' : 'Front'} · Block ${selectedCell + 1}`}</b><span>{selectedPlacement ? `${selectedPlacement.file.name} · Page ${selectedPlacement.pageIndex + 1} · ${Math.round((selectedPlacement.zoom ?? 1) * 100)}%` : selectedCell === null ? 'Click to edit · drop a PDF to replace' : `Master PDF · Page ${(selectedMasterMeta?.pageIndex ?? 0) + 1}`}</span></div></div>
             {placementNotice && <p className="placement-notice" role="status">{placementNotice}</p>}
-            <p className="hint">Click a block to open its editor on the artboard. Or drop a PDF directly onto any block. Smaller artwork stays centered at 100% scale.</p>
+            <p className="hint">Click a Front or Back block to edit that side. Page, rotation, PDF and 100–200% center zoom are saved per block.</p>
           </div>}
         </section>}
         <div className="panel-next"><span>Ready to arrange the sheet?</span><button type="button" onClick={() => changeInspectorTab('layout')}>Sheet & grid layout →</button></div>
