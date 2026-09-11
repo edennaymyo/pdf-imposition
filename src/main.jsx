@@ -236,6 +236,10 @@ function App() {
   const sheetLabel = paperPreset === '13x19' ? '13 × 19 in' : paperPreset === '12.4x18.4' ? '12.4 × 18.4 in' : `${display(sheetW)} × ${display(sheetH)}`;
   const backSize = backMeta ? finishedSize(backMeta, backRotation) : null;
   const selectedPlacement = selectedCell === null ? null : mixedPlacements[selectedCell] || null;
+  const selectedBlockFile = selectedPlacement?.file || sourceFile;
+  const selectedBlockMeta = selectedPlacement?.meta || meta;
+  const selectedBlockPage = selectedPlacement?.pageIndex ?? meta?.pageIndex ?? 0;
+  const selectedBlockRotation = selectedPlacement?.rotation ?? rotation;
   const sizesMatch = Boolean(meta && (!duplex || (backSize && Math.abs(itemW - backSize.width) <= 0.01 && Math.abs(itemH - backSize.height) <= 0.01)));
   const issueText = statusError || (barcodeNeedsAttention ? 'Reconnect the selected barcode file.' : sourceFile && meta && !masterConfirmed ? 'Confirm the finished item size before arranging the sheet.' : sourceFile && !processing && !geometricFit ? 'This layout does not fit. Review sheet size and repeat count.' : '');
   const issueTab = barcodeNeedsAttention ? 'duplo' : !meta || !masterConfirmed || (duplex && !sizesMatch) || inspectionError ? 'artwork' : 'layout';
@@ -525,23 +529,21 @@ function App() {
     await addPlacementFile(file, cellIndex);
   };
   const updatePlacementPage = async pageIndex => {
-    const placement = mixedPlacements[selectedCell];
-    if (!placement) return;
+    if (selectedCell === null || !selectedBlockFile || !selectedBlockMeta) return;
     try {
-      const placementMeta = await inspectPdf(placement.file, pageIndex);
-      const fit = classifyPlacement(itemW, itemH, placementMeta, placement.rotation);
+      const placementMeta = await inspectPdf(selectedBlockFile, pageIndex);
+      const fit = classifyPlacement(itemW, itemH, placementMeta, selectedBlockRotation);
       if (fit.status === 'oversized') { setPlacementNotice(`PDF page ${pageIndex + 1} is larger than the confirmed slot.`); return; }
-      setMixedPlacements(current => ({ ...current, [selectedCell]: { ...placement, meta: placementMeta, pageIndex: placementMeta.pageIndex } }));
-      setPlacementNotice(fit.status === 'smaller' ? `PDF page ${pageIndex + 1} is smaller and will be centered at 100% scale.` : '');
+      setMixedPlacements(current => ({ ...current, [selectedCell]: { file: selectedBlockFile, meta: placementMeta, pageIndex: placementMeta.pageIndex, rotation: selectedBlockRotation } }));
+      setPlacementNotice(fit.status === 'smaller' ? `PDF page ${pageIndex + 1} is smaller and will be centered at 100% scale.` : `Block ${selectedCell + 1} now uses Page ${pageIndex + 1}.`);
     } catch (failure) { setPlacementNotice(`PDF page could not be read: ${failure.message}`); }
   };
   const rotatePlacement = () => {
-    const placement = mixedPlacements[selectedCell];
-    if (!placement) return;
-    const nextRotation = (placement.rotation + 90) % 360;
-    const fit = classifyPlacement(itemW, itemH, placement.meta, nextRotation);
+    if (selectedCell === null || !selectedBlockFile || !selectedBlockMeta) return;
+    const nextRotation = (selectedBlockRotation + 90) % 360;
+    const fit = classifyPlacement(itemW, itemH, selectedBlockMeta, nextRotation);
     if (fit.status === 'oversized') { setPlacementNotice('This rotation would make the artwork larger than the confirmed slot.'); return; }
-    setMixedPlacements(current => ({ ...current, [selectedCell]: { ...placement, rotation: nextRotation } }));
+    setMixedPlacements(current => ({ ...current, [selectedCell]: { file: selectedBlockFile, meta: selectedBlockMeta, pageIndex: selectedBlockPage, rotation: nextRotation } }));
     setPlacementNotice(fit.status === 'smaller' ? `Rotated ${nextRotation}°. Smaller artwork remains centered at 100% scale.` : '');
   };
   const clearPlacement = () => {
@@ -633,9 +635,9 @@ function App() {
               })}</div>}
               {side === 'front' && fillMode === 'mixed' && masterConfirmed && selectedGeometryCell && <div className={`placement-context-toolbar ${toolbarBelow ? 'is-below' : ''}`}
                 style={{ left: '50%', top: `${(toolbarBelow ? selectedGeometryCell.y + sideGeometry.itemH : selectedGeometryCell.y) / sheetH * 100}%` }} role="group" aria-label={`Edit block ${selectedCell + 1}`}>
-                <div className="placement-context-title"><b>Block {selectedCell + 1}</b><span>{selectedPlacement ? selectedPlacement.file.name : 'Master artwork'}</span></div>
-                {selectedPlacement && <div className="placement-page-controls"><button type="button" aria-label="Previous PDF page" disabled={selectedPlacement.pageIndex === 0} onClick={() => updatePlacementPage(selectedPlacement.pageIndex - 1)}><ChevronLeft size={14}/></button><select aria-label="Replacement PDF page" value={selectedPlacement.pageIndex} onChange={event => updatePlacementPage(Number(event.target.value))}>{Array.from({ length: selectedPlacement.meta.pages }, (_, pageIndex) => <option key={pageIndex} value={pageIndex}>Page {pageIndex + 1} of {selectedPlacement.meta.pages}</option>)}</select><button type="button" aria-label="Next PDF page" disabled={selectedPlacement.pageIndex === selectedPlacement.meta.pages - 1} onClick={() => updatePlacementPage(selectedPlacement.pageIndex + 1)}><ChevronRight size={14}/></button></div>}
-                <div className="placement-context-actions"><button type="button" onClick={changePlacementFile}><FileUp size={13}/> Change PDF</button>{selectedPlacement && <><button type="button" onClick={rotatePlacement}><RotateCw size={13}/> 90°</button><button type="button" onClick={clearPlacement}><RefreshCcw size={13}/> Reset</button></>}<button type="button" className="context-close" aria-label="Close block editor" onClick={() => setSelectedCell(null)}><X size={14}/></button></div>
+                <div className="placement-context-title"><b>Block {selectedCell + 1}</b><span>{selectedPlacement ? selectedPlacement.file.name : `Master · ${sourceFile?.name || 'artwork'}`}</span></div>
+                {selectedBlockMeta && <div className="placement-page-controls"><button type="button" aria-label="Previous PDF page" disabled={selectedBlockPage === 0} onClick={() => updatePlacementPage(selectedBlockPage - 1)}><ChevronLeft size={14}/></button><select aria-label="Block PDF page" value={selectedBlockPage} onChange={event => updatePlacementPage(Number(event.target.value))}>{Array.from({ length: selectedBlockMeta.pages }, (_, pageIndex) => <option key={pageIndex} value={pageIndex}>Page {pageIndex + 1} of {selectedBlockMeta.pages}</option>)}</select><button type="button" aria-label="Next PDF page" disabled={selectedBlockPage === selectedBlockMeta.pages - 1} onClick={() => updatePlacementPage(selectedBlockPage + 1)}><ChevronRight size={14}/></button></div>}
+                <div className="placement-context-actions"><button type="button" onClick={changePlacementFile}><FileUp size={13}/> Change PDF</button><button type="button" onClick={rotatePlacement}><RotateCw size={13}/> 90°</button><button type="button" disabled={!selectedPlacement} onClick={clearPlacement}><RefreshCcw size={13}/> Reset</button><button type="button" className="context-close" aria-label="Close block editor" onClick={() => setSelectedCell(null)}><X size={14}/></button></div>
               </div>}
             </div>
           </div></div>
@@ -666,7 +668,7 @@ function App() {
         </SourceCard>}
         {meta && sizesMatch && duplex && <div className="source-check"><CheckCircle2 size={16}/><span>Finished sizes match<small>{display(itemW)} × {display(itemH)} · no scaling</small></span></div>}
         {meta && masterConfirmed && !duplex && <section className="fill-mode-section"><SegmentedChoice label="Artwork filling" value={fillMode} options={[{ value: 'repeat', label: 'Repeat one artwork' }, { value: 'mixed', label: 'Mixed artworks' }]} onChange={value => { setFillMode(value); setSelectedCell(value === 'mixed' ? 0 : null); setPlacementNotice(''); }}/>
-          {fillMode === 'mixed' && <div className="slot-editor"><input ref={slotUploadInput} className="visually-hidden" aria-label="Choose replacement artwork PDF" type="file" accept="application/pdf" onChange={uploadPlacement}/><div className="slot-editor-heading"><div><b>{selectedCell === null ? 'Select a block on the sheet' : `Block ${selectedCell + 1} selected`}</b><span>{selectedPlacement ? `${selectedPlacement.file.name} · Page ${selectedPlacement.pageIndex + 1}` : selectedCell === null ? 'Click to edit · drop a PDF to replace' : 'Using master artwork'}</span></div></div>
+          {fillMode === 'mixed' && <div className="slot-editor"><input ref={slotUploadInput} className="visually-hidden" aria-label="Choose replacement artwork PDF" type="file" accept="application/pdf" onChange={uploadPlacement}/><div className="slot-editor-heading"><div><b>{selectedCell === null ? 'Select a block on the sheet' : `Block ${selectedCell + 1} selected`}</b><span>{selectedPlacement ? `${selectedPlacement.file.name} · Page ${selectedPlacement.pageIndex + 1}` : selectedCell === null ? 'Click to edit · drop a PDF to replace' : `Master PDF · Page ${(meta?.pageIndex ?? 0) + 1}`}</span></div></div>
             {placementNotice && <p className="placement-notice" role="status">{placementNotice}</p>}
             <p className="hint">Click a block to open its editor on the artboard. Or drop a PDF directly onto any block. Smaller artwork stays centered at 100% scale.</p>
           </div>}
