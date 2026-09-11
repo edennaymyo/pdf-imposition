@@ -72,20 +72,29 @@ test('mixed artwork keeps the master slot and centers smaller finished artwork w
   assert.throws(() => planJob(front, null, { ...settings, mixedPlacements: { 0: { meta: { ...front, width: 100 }, rotation: 0 } } }), /larger/);
 });
 
-test('duplex mixed artwork keeps paired slot ids while allowing independent side rotation and zoom', () => {
-  const frontPlacement = { meta: front, pageIndex: 1, rotation: 180, zoom: 1 };
-  const backPlacement = { meta: back, pageIndex: 2, rotation: 180, zoom: 1.5 };
+test('duplex mixed artwork keeps paired slot ids while allowing independent side rotation', () => {
+  const frontPlacement = { meta: front, pageIndex: 1, rotation: 180 };
+  const backPlacement = { meta: back, pageIndex: 2, rotation: 180 };
   const plan = planJob(front, back, { ...defaults, rows: 2, cols: 2, fillMode: 'mixed',
     mixedPlacements: { 1: frontPlacement }, mixedBackPlacements: { 1: backPlacement } });
   const frontCell = plan.sides[0].cells.find(cell => cell.slotIndex === 1);
   const backCell = plan.sides[1].cells.find(cell => cell.slotIndex === 1);
   assert.equal(frontCell.rotation, 180);
   assert.equal(backCell.rotation, 180);
-  assert.equal(backCell.zoom, 1.5);
   assert.equal(frontCell.slotIndex, backCell.slotIndex);
-  near(backCell.artW, back.width * 1.5);
-  near(backCell.artH, back.height * 1.5);
-  near(backCell.artX, backCell.x - back.width * 0.25);
+  near(backCell.artW, back.width);
+  near(backCell.artH, back.height);
+  near(backCell.artX, backCell.x);
+});
+
+test('preview zoom metadata cannot alter print geometry or artwork ratio', () => {
+  const basePlacement = { meta: front, pageIndex: 0, rotation: 0 };
+  const baseline = planJob(front, back, { ...defaults, rows: 1, cols: 1, fillMode: 'mixed', mixedPlacements: { 0: basePlacement } });
+  const attemptedZoom = planJob(front, back, { ...defaults, rows: 1, cols: 1, fillMode: 'mixed', mixedPlacements: { 0: { ...basePlacement, zoom: 2 } } });
+  const baseCell = baseline.sides[0].cells[0];
+  const zoomCell = attemptedZoom.sides[0].cells[0];
+  for (const property of ['artX', 'artY', 'artW', 'artH']) near(zoomCell[property], baseCell[property]);
+  near(zoomCell.artW / zoomCell.artH, front.width / front.height);
 });
 
 test('back bleed overflow is caught even when front fits', () => {
@@ -135,7 +144,7 @@ test('PDF output: paired order, page dimensions, separate sides and single-sided
   const smallFile = new Blob([await smallDoc.save()]);
   const mixed = await buildJobPdf({ file, meta, pageIndex: 0 }, null, {
     ...defaults, duplex: false, fillMode: 'mixed',
-    mixedPlacements: { 1: { file: smallFile, meta: smallMeta, pageIndex: 0, rotation: 0, zoom: 1.5 } },
+    mixedPlacements: { 1: { file: smallFile, meta: smallMeta, pageIndex: 0, rotation: 0 } },
   });
   assert.equal((await PDFDocument.load(mixed)).getPageCount(), 1);
 });

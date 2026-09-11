@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Download, FileUp, FolderOpen, Minus, Plus, RefreshCcw, RotateCw, Save, Settings2, Trash2, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Download, FileUp, FolderOpen, Minus, Plus, RefreshCcw, RotateCw, Save, Settings2, Trash2, X, ZoomIn } from 'lucide-react';
 import { PDFDocument } from 'pdf-lib';
 import { buildJobPdf, planJob, calculateOuterBleed, classifyPlacement, inspectBarcode, extractOutputSide, finishedSize } from './pdf-engine.js';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
@@ -192,6 +192,7 @@ function App() {
   const [selectedPlacementSide, setSelectedPlacementSide] = useState('front');
   const [placementNotice, setPlacementNotice] = useState('');
   const [draggedOverCell, setDraggedOverCell] = useState(null);
+  const [previewCell, setPreviewCell] = useState(null);
   const slotUploadInput = useRef(null);
   const pendingPlacementCell = useRef(null);
   const pendingPlacementSide = useRef('front');
@@ -247,7 +248,9 @@ function App() {
   const selectedBlockMeta = selectedPlacement?.meta || selectedMasterMeta;
   const selectedBlockPage = selectedPlacement?.pageIndex ?? selectedMasterMeta?.pageIndex ?? 0;
   const selectedBlockRotation = selectedPlacement?.rotation ?? selectedMasterRotation;
-  const selectedBlockZoom = selectedPlacement?.zoom ?? 1;
+  const previewGeometry = previewCell ? plan?.sides.find(side => side.side === previewCell.side) : null;
+  const previewCellGeometry = previewGeometry?.cells.find(cell => cell.slotIndex === previewCell?.cellIndex);
+  const previewImage = previewCell ? proofImages[previewCell.side === 'front' ? 0 : 1] : null;
   const sizesMatch = Boolean(meta && (!duplex || (backSize && Math.abs(itemW - backSize.width) <= 0.01 && Math.abs(itemH - backSize.height) <= 0.01)));
   const issueText = statusError || (barcodeNeedsAttention ? 'Reconnect the selected barcode file.' : sourceFile && meta && !masterConfirmed ? 'Confirm the finished item size before arranging the sheet.' : sourceFile && !processing && !geometricFit ? 'This layout does not fit. Review sheet size and repeat count.' : '');
   const issueTab = barcodeNeedsAttention ? 'duplo' : !meta || !masterConfirmed || (duplex && !sizesMatch) || inspectionError ? 'artwork' : 'layout';
@@ -290,13 +293,15 @@ function App() {
   }, [meta, masterConfirmed]);
 
   useEffect(() => {
-    if (!sizeConfirmOpen) return undefined;
+    if (!sizeConfirmOpen && !previewCell) return undefined;
     const closeOnEscape = event => {
-      if (event.key === 'Escape') setSizeConfirmOpen(false);
+      if (event.key !== 'Escape') return;
+      if (previewCell) setPreviewCell(null);
+      else setSizeConfirmOpen(false);
     };
     document.addEventListener('keydown', closeOnEscape);
     return () => document.removeEventListener('keydown', closeOnEscape);
-  }, [sizeConfirmOpen]);
+  }, [sizeConfirmOpen, previewCell]);
 
   useEffect(() => {
     let cancelled = false;
@@ -500,7 +505,7 @@ function App() {
       }
       const fit = classifyPlacement(itemW, itemH, placementMeta, fittingRotation);
       updateSidePlacements(side, current => ({ ...current, [cellIndex]: {
-        file, meta: placementMeta, pageIndex: placementMeta.pageIndex, rotation: fittingRotation, zoom: 1,
+        file, meta: placementMeta, pageIndex: placementMeta.pageIndex, rotation: fittingRotation,
       } }));
       setSelectedCell(cellIndex);
       setSelectedPlacementSide(side);
@@ -551,7 +556,7 @@ function App() {
       const placementMeta = await inspectPdf(selectedBlockFile, pageIndex);
       const fit = classifyPlacement(itemW, itemH, placementMeta, selectedBlockRotation);
       if (fit.status === 'oversized') { setPlacementNotice(`PDF page ${pageIndex + 1} is larger than the confirmed slot.`); return; }
-      updateSidePlacements(selectedPlacementSide, current => ({ ...current, [selectedCell]: { file: selectedBlockFile, meta: placementMeta, pageIndex: placementMeta.pageIndex, rotation: selectedBlockRotation, zoom: selectedBlockZoom } }));
+      updateSidePlacements(selectedPlacementSide, current => ({ ...current, [selectedCell]: { file: selectedBlockFile, meta: placementMeta, pageIndex: placementMeta.pageIndex, rotation: selectedBlockRotation } }));
       setPlacementNotice(fit.status === 'smaller' ? `PDF page ${pageIndex + 1} is smaller and will be centered.` : `${selectedPlacementSide === 'back' ? 'Back' : 'Front'} Block ${selectedCell + 1} now uses Page ${pageIndex + 1}.`);
     } catch (failure) { setPlacementNotice(`PDF page could not be read: ${failure.message}`); }
   };
@@ -559,14 +564,8 @@ function App() {
     if (selectedCell === null || !selectedBlockFile || !selectedBlockMeta) return;
     const fit = classifyPlacement(itemW, itemH, selectedBlockMeta, nextRotation);
     if (fit.status === 'oversized') { setPlacementNotice('This rotation would make the artwork larger than the confirmed slot.'); return; }
-    updateSidePlacements(selectedPlacementSide, current => ({ ...current, [selectedCell]: { file: selectedBlockFile, meta: selectedBlockMeta, pageIndex: selectedBlockPage, rotation: nextRotation, zoom: selectedBlockZoom } }));
+    updateSidePlacements(selectedPlacementSide, current => ({ ...current, [selectedCell]: { file: selectedBlockFile, meta: selectedBlockMeta, pageIndex: selectedBlockPage, rotation: nextRotation } }));
     setPlacementNotice(fit.status === 'smaller' ? `Rotated ${nextRotation}°. Smaller artwork remains centered.` : `Rotated ${nextRotation}°.`);
-  };
-  const updatePlacementZoom = zoom => {
-    if (selectedCell === null || !selectedBlockFile || !selectedBlockMeta) return;
-    const nextZoom = Math.max(1, Math.min(2, Math.round(zoom * 10) / 10));
-    updateSidePlacements(selectedPlacementSide, current => ({ ...current, [selectedCell]: { file: selectedBlockFile, meta: selectedBlockMeta, pageIndex: selectedBlockPage, rotation: selectedBlockRotation, zoom: nextZoom } }));
-    setPlacementNotice(nextZoom === 1 ? 'Zoom reset to 100%.' : `Artwork zoom ${Math.round(nextZoom * 100)}%. Output is center-cropped to this block.`);
   };
   const clearPlacement = () => {
     if (selectedCell === null) return;
@@ -661,13 +660,22 @@ function App() {
                 style={{ left: '50%', top: `${(toolbarBelow ? selectedGeometryCell.y + sideGeometry.itemH : selectedGeometryCell.y) / sheetH * 100}%` }} role="group" aria-label={`Edit ${side} block ${selectedCell + 1}`}>
                 <div className="placement-context-title"><b>{side === 'back' ? 'Back' : 'Front'} · Block {selectedCell + 1}</b><span>{selectedPlacement ? selectedPlacement.file.name : `Master · ${selectedMasterFile?.name || 'artwork'}`}</span></div>
                 {selectedBlockMeta && <div className="placement-page-controls"><button type="button" aria-label="Previous PDF page" disabled={selectedBlockPage === 0} onClick={() => updatePlacementPage(selectedBlockPage - 1)}><ChevronLeft size={14}/></button><select aria-label="Block PDF page" value={selectedBlockPage} onChange={event => updatePlacementPage(Number(event.target.value))}>{Array.from({ length: selectedBlockMeta.pages }, (_, pageIndex) => <option key={pageIndex} value={pageIndex}>Page {pageIndex + 1} of {selectedBlockMeta.pages}</option>)}</select><button type="button" aria-label="Next PDF page" disabled={selectedBlockPage === selectedBlockMeta.pages - 1} onClick={() => updatePlacementPage(selectedBlockPage + 1)}><ChevronRight size={14}/></button></div>}
-                <div className="placement-transform-controls"><label><span>Rotate</span><select aria-label="Block rotation" value={selectedBlockRotation} onChange={event => updatePlacementRotation(Number(event.target.value))}>{[0, 90, 180, 270].map(angle => <option key={angle} value={angle} disabled={classifyPlacement(itemW, itemH, selectedBlockMeta, angle).status === 'oversized'}>{angle}°</option>)}</select></label><div className="placement-zoom" aria-label="Block artwork zoom"><span>Zoom</span><button type="button" aria-label="Zoom artwork out" disabled={selectedBlockZoom <= 1} onClick={() => updatePlacementZoom(selectedBlockZoom - .1)}>−</button><b>{Math.round(selectedBlockZoom * 100)}%</b><button type="button" aria-label="Zoom artwork in" disabled={selectedBlockZoom >= 2} onClick={() => updatePlacementZoom(selectedBlockZoom + .1)}>+</button></div></div>
+                <div className="placement-transform-controls"><label><span>Rotate</span><select aria-label="Block rotation" value={selectedBlockRotation} onChange={event => updatePlacementRotation(Number(event.target.value))}>{[0, 90, 180, 270].map(angle => <option key={angle} value={angle} disabled={classifyPlacement(itemW, itemH, selectedBlockMeta, angle).status === 'oversized'}>{angle}°</option>)}</select></label><button type="button" className="placement-preview-button" onClick={() => setPreviewCell({ side, cellIndex: selectedCell })}><ZoomIn size={14}/> Preview</button></div>
                 <div className="placement-context-actions"><button type="button" onClick={changePlacementFile}><FileUp size={13}/> Change PDF</button><button type="button" disabled={!selectedPlacement} onClick={clearPlacement}><RefreshCcw size={13}/> Reset side</button><button type="button" className="context-close" aria-label="Close block editor" onClick={() => setSelectedCell(null)}><X size={14}/></button></div>
               </div>}
             </div>
           </div></div>
         </figure>;})}
       </div>
+      {previewCell && previewGeometry && previewCellGeometry && <div className="block-preview-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setPreviewCell(null); }}>
+        <section className="block-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="block-preview-title">
+          <header><div><b id="block-preview-title">{previewCell.side === 'back' ? 'Back' : 'Front'} · Block {previewCell.cellIndex + 1}</b><span>Preview only · artwork size, ratio and export stay unchanged</span></div><button type="button" aria-label="Close block preview" onClick={() => setPreviewCell(null)}><X size={18}/></button></header>
+          <div className="block-preview-crop" style={{ aspectRatio: previewGeometry.itemW / previewGeometry.itemH }}>
+            {previewImage ? <img src={previewImage} alt={`${previewCell.side === 'back' ? 'Back' : 'Front'} block ${previewCell.cellIndex + 1} enlarged preview`} style={{ width: `${sheetW / previewGeometry.itemW * 100}%`, left: `${-previewCellGeometry.x / previewGeometry.itemW * 100}%`, top: `${-previewCellGeometry.y / previewGeometry.itemH * 100}%` }}/> : <span>Updating preview…</span>}
+          </div>
+          <p>Inspection view only. The PDF artwork remains at its original 100% size and original aspect ratio.</p>
+        </section>
+      </div>}
       <footer><button type="button" className={`proof-status ${exportReady ? 'ok' : 'warn'}`} disabled={exportReady || processing} onClick={reviewIssue}>{exportReady ? <CheckCircle2/> : <AlertTriangle/>} {processing ? 'Updating proof…' : !sourceFile ? 'Choose artwork →' : meta && !masterConfirmed ? 'Confirm item size →' : barcodeNeedsAttention ? 'Review barcode →' : !outputBytes ? 'Review artwork / layout →' : 'Preview matches export'}</button><span>Finished · {display(itemW)} × {display(itemH)}</span><span>{cols} × {rows} · {cols * rows} up{duplex ? ' / side' : ''}</span></footer>
     </section>
 
@@ -693,9 +701,9 @@ function App() {
         </SourceCard>}
         {meta && sizesMatch && duplex && <div className="source-check"><CheckCircle2 size={16}/><span>Finished sizes match<small>{display(itemW)} × {display(itemH)} · no scaling</small></span></div>}
         {meta && masterConfirmed && sizesMatch && <section className="fill-mode-section"><SegmentedChoice label="Artwork filling" value={fillMode} options={[{ value: 'repeat', label: 'Repeat one artwork' }, { value: 'mixed', label: 'Mixed artworks' }]} onChange={value => { setFillMode(value); setSelectedCell(value === 'mixed' ? 0 : null); setSelectedPlacementSide('front'); setPlacementNotice(''); }}/>
-          {fillMode === 'mixed' && <div className="slot-editor"><input ref={slotUploadInput} className="visually-hidden" aria-label="Choose replacement artwork PDF" type="file" accept="application/pdf" onChange={uploadPlacement}/><div className="slot-editor-heading"><div><b>{selectedCell === null ? 'Select a block on the sheet' : `${selectedPlacementSide === 'back' ? 'Back' : 'Front'} · Block ${selectedCell + 1}`}</b><span>{selectedPlacement ? `${selectedPlacement.file.name} · Page ${selectedPlacement.pageIndex + 1} · ${Math.round((selectedPlacement.zoom ?? 1) * 100)}%` : selectedCell === null ? 'Click to edit · drop a PDF to replace' : `Master PDF · Page ${(selectedMasterMeta?.pageIndex ?? 0) + 1}`}</span></div></div>
+          {fillMode === 'mixed' && <div className="slot-editor"><input ref={slotUploadInput} className="visually-hidden" aria-label="Choose replacement artwork PDF" type="file" accept="application/pdf" onChange={uploadPlacement}/><div className="slot-editor-heading"><div><b>{selectedCell === null ? 'Select a block on the sheet' : `${selectedPlacementSide === 'back' ? 'Back' : 'Front'} · Block ${selectedCell + 1}`}</b><span>{selectedPlacement ? `${selectedPlacement.file.name} · Page ${selectedPlacement.pageIndex + 1}` : selectedCell === null ? 'Click to edit · drop a PDF to replace' : `Master PDF · Page ${(selectedMasterMeta?.pageIndex ?? 0) + 1}`}</span></div></div>
             {placementNotice && <p className="placement-notice" role="status">{placementNotice}</p>}
-            <p className="hint">Click a Front or Back block to edit that side. Page, rotation, PDF and 100–200% center zoom are saved per block.</p>
+            <p className="hint">Click a Front or Back block to edit that side. Preview enlarges only the inspection view; artwork size, ratio and export never change.</p>
           </div>}
         </section>}
         <div className="panel-next"><span>Ready to arrange the sheet?</span><button type="button" onClick={() => changeInspectorTab('layout')}>Sheet & grid layout →</button></div>
