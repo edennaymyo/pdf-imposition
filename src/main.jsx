@@ -644,8 +644,8 @@ function App() {
                 const sidePlacements = side === 'back' ? mixedBackPlacements : mixedPlacements;
                 const replacement = sidePlacements[cell.slotIndex];
                 const cellKey = `${side}-${cell.slotIndex}`;
-                return <button type="button" key={cell.slotIndex} className={`placement-hotspot ${selectedCell === cell.slotIndex && selectedPlacementSide === side ? 'is-selected' : ''} ${replacement ? 'has-replacement' : ''} ${draggedOverCell === cellKey ? 'is-dragover' : ''}`}
-                  style={{ left: `${cell.x / sheetW * 100}%`, top: `${cell.y / sheetH * 100}%`, width: `${sideGeometry.itemW / sheetW * 100}%`, height: `${sideGeometry.itemH / sheetH * 100}%` }}
+                return <div key={cell.slotIndex} className="placement-slot-shell" style={{ left: `${cell.x / sheetW * 100}%`, top: `${cell.y / sheetH * 100}%`, width: `${sideGeometry.itemW / sheetW * 100}%`, height: `${sideGeometry.itemH / sheetH * 100}%` }}>
+                  <button type="button" className={`placement-hotspot ${selectedCell === cell.slotIndex && selectedPlacementSide === side ? 'is-selected' : ''} ${replacement ? 'has-replacement' : ''} ${draggedOverCell === cellKey ? 'is-dragover' : ''}`}
                   aria-label={`${side === 'back' ? 'Back' : 'Front'} block ${cell.slotIndex + 1}${replacement ? `, ${replacement.file.name}` : ', master artwork'}. Click to edit or drop a PDF to replace.`}
                   onClick={() => selectPlacementCell(cell.slotIndex, side)}
                   onDragEnter={event => { event.preventDefault(); setDraggedOverCell(cellKey); }}
@@ -654,7 +654,9 @@ function App() {
                   onDrop={event => dropPlacement(event, cell.slotIndex, side)}>
                   <span className="placement-slot-number">{cell.slotIndex + 1}</span>
                   <span className="placement-slot-action"><FileUp size={14}/>{draggedOverCell === cellKey ? 'Drop PDF here' : 'Edit block'}</span>
-                </button>;
+                  </button>
+                  <button type="button" className="placement-slot-preview" aria-label={`Preview ${side} block ${cell.slotIndex + 1}`} title="Preview block" onClick={() => setPreviewCell({ side, cellIndex: cell.slotIndex })}><ZoomIn size={15}/></button>
+                </div>;
               })}</div>}
               {selectedPlacementSide === side && fillMode === 'mixed' && masterConfirmed && selectedGeometryCell && <div className={`placement-context-toolbar ${toolbarBelow ? 'is-below' : ''}`}
                 style={{ left: '50%', top: `${(toolbarBelow ? selectedGeometryCell.y + sideGeometry.itemH : selectedGeometryCell.y) / sheetH * 100}%` }} role="group" aria-label={`Edit ${side} block ${selectedCell + 1}`}>
@@ -662,7 +664,6 @@ function App() {
                 <div className="placement-primary-controls">
                   {selectedBlockMeta && <div className="compact-page-control" aria-label="Block page navigation"><button type="button" aria-label="Previous block page" disabled={selectedBlockPage === 0} onClick={() => updatePlacementPage(selectedBlockPage - 1)}><ChevronLeft size={13}/></button><select aria-label="Block PDF page" value={selectedBlockPage} onChange={event => updatePlacementPage(Number(event.target.value))}>{Array.from({ length: selectedBlockMeta.pages }, (_, pageIndex) => <option key={pageIndex} value={pageIndex}>{pageIndex + 1} / {selectedBlockMeta.pages}</option>)}</select><button type="button" aria-label="Next block page" disabled={selectedBlockPage === selectedBlockMeta.pages - 1} onClick={() => updatePlacementPage(selectedBlockPage + 1)}><ChevronRight size={13}/></button></div>}
                   <label className="compact-rotation-control"><RotateCw size={12}/><span className="visually-hidden">Rotate</span><select aria-label="Block rotation" value={selectedBlockRotation} onChange={event => updatePlacementRotation(Number(event.target.value))}>{[0, 90, 180, 270].map(angle => <option key={angle} value={angle} disabled={classifyPlacement(itemW, itemH, selectedBlockMeta, angle).status === 'oversized'}>{angle}°</option>)}</select></label>
-                  <button type="button" className="placement-preview-button" aria-label="Preview block" title="Preview only" onClick={() => setPreviewCell({ side, cellIndex: selectedCell })}><ZoomIn size={14}/><span>Preview</span></button>
                 </div>
                 <div className="placement-context-actions"><button type="button" onClick={changePlacementFile}><FileUp size={13}/> Change PDF</button><button type="button" disabled={!selectedPlacement} onClick={clearPlacement}><RefreshCcw size={13}/> Reset</button></div>
               </div>}
