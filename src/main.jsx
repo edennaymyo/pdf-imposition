@@ -548,7 +548,7 @@ function App() {
   const startEditorDrag = event => {
     if (event.button !== 0 || event.target.closest('button, select, input')) return;
     const toolbar = event.currentTarget.closest('.placement-context-toolbar');
-    const boundary = toolbar?.closest('.proof-stage');
+    const boundary = toolbar?.closest('.canvas-wrap');
     if (!toolbar || !boundary) return;
     const toolbarRect = toolbar.getBoundingClientRect();
     const boundaryRect = boundary.getBoundingClientRect();
@@ -586,7 +586,7 @@ function App() {
     event.preventDefault();
     if (event.key === 'Home') { setEditorOffset({ x: 0, y: 0 }); return; }
     const toolbar = event.currentTarget.closest('.placement-context-toolbar');
-    const boundary = toolbar?.closest('.proof-stage');
+    const boundary = toolbar?.closest('.canvas-wrap');
     if (!toolbar || !boundary) return;
     const toolbarRect = toolbar.getBoundingClientRect();
     const boundaryRect = boundary.getBoundingClientRect();
