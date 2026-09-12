@@ -310,7 +310,13 @@ function App() {
     setEditorOffset({ x: 0, y: 0 });
     editorDrag.current = null;
     setEditorDragging(false);
-  }, [selectedCell, selectedPlacementSide]);
+  }, [selectedCell, selectedPlacementSide, proofView, cols, rows, sheetW, sheetH]);
+
+  useEffect(() => {
+    const keepEditorVisible = () => setEditorOffset({ x: 0, y: 0 });
+    window.addEventListener('resize', keepEditorVisible);
+    return () => window.removeEventListener('resize', keepEditorVisible);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -542,7 +548,7 @@ function App() {
   const startEditorDrag = event => {
     if (event.button !== 0 || event.target.closest('button, select, input')) return;
     const toolbar = event.currentTarget.closest('.placement-context-toolbar');
-    const boundary = toolbar?.closest('.proof-frame');
+    const boundary = toolbar?.closest('.proof-stage');
     if (!toolbar || !boundary) return;
     const toolbarRect = toolbar.getBoundingClientRect();
     const boundaryRect = boundary.getBoundingClientRect();
@@ -552,10 +558,10 @@ function App() {
       startY: event.clientY,
       originX: editorOffset.x,
       originY: editorOffset.y,
-      minX: editorOffset.x + boundaryRect.left - toolbarRect.left,
-      maxX: editorOffset.x + boundaryRect.right - toolbarRect.right,
-      minY: editorOffset.y + boundaryRect.top - toolbarRect.top,
-      maxY: editorOffset.y + boundaryRect.bottom - toolbarRect.bottom,
+      minX: editorOffset.x + boundaryRect.left + 10 - toolbarRect.left,
+      maxX: editorOffset.x + boundaryRect.right - 10 - toolbarRect.right,
+      minY: editorOffset.y + boundaryRect.top + 10 - toolbarRect.top,
+      maxY: editorOffset.y + boundaryRect.bottom - 10 - toolbarRect.bottom,
     };
     event.currentTarget.setPointerCapture?.(event.pointerId);
     setEditorDragging(true);
@@ -580,7 +586,7 @@ function App() {
     event.preventDefault();
     if (event.key === 'Home') { setEditorOffset({ x: 0, y: 0 }); return; }
     const toolbar = event.currentTarget.closest('.placement-context-toolbar');
-    const boundary = toolbar?.closest('.proof-frame');
+    const boundary = toolbar?.closest('.proof-stage');
     if (!toolbar || !boundary) return;
     const toolbarRect = toolbar.getBoundingClientRect();
     const boundaryRect = boundary.getBoundingClientRect();
@@ -588,8 +594,8 @@ function App() {
     const xDelta = Math.sign(direction[0]) * step;
     const yDelta = Math.sign(direction[1]) * step;
     setEditorOffset(current => ({
-      x: Math.max(current.x + boundaryRect.left - toolbarRect.left, Math.min(current.x + boundaryRect.right - toolbarRect.right, current.x + xDelta)),
-      y: Math.max(current.y + boundaryRect.top - toolbarRect.top, Math.min(current.y + boundaryRect.bottom - toolbarRect.bottom, current.y + yDelta)),
+      x: Math.max(current.x + boundaryRect.left + 10 - toolbarRect.left, Math.min(current.x + boundaryRect.right - 10 - toolbarRect.right, current.x + xDelta)),
+      y: Math.max(current.y + boundaryRect.top + 10 - toolbarRect.top, Math.min(current.y + boundaryRect.bottom - 10 - toolbarRect.bottom, current.y + yDelta)),
     }));
   };
   const changePlacementFile = () => {
@@ -720,16 +726,16 @@ function App() {
                   <button type="button" className="placement-slot-preview" aria-label={`Preview ${side} block ${cell.slotIndex + 1}`} title="Preview block" onClick={() => setPreviewCell({ side, cellIndex: cell.slotIndex })}><ZoomIn size={15}/></button>
                 </div>;
               })}</div>}
-              {selectedPlacementSide === side && fillMode === 'mixed' && masterConfirmed && selectedGeometryCell && <div className={`placement-context-toolbar ${toolbarBelow ? 'is-below' : ''} ${editorDragging ? 'is-dragging' : ''}`}
-                style={{ left: '50%', top: `${(toolbarBelow ? selectedGeometryCell.y + sideGeometry.itemH : selectedGeometryCell.y) / sheetH * 100}%`, '--editor-drag-x': `${editorOffset.x}px`, '--editor-drag-y': `${editorOffset.y}px` }} role="group" aria-label={`Edit ${side} block ${selectedCell + 1}`}>
-                <div className="placement-context-title" tabIndex={0} aria-label="Move block editor. Drag or use arrow keys. Press Home to reset position." title="Drag to move · double-click to reset position" onPointerDown={startEditorDrag} onPointerMove={moveEditorDrag} onPointerUp={endEditorDrag} onPointerCancel={endEditorDrag} onDoubleClick={() => setEditorOffset({ x: 0, y: 0 })} onKeyDown={moveEditorWithKeyboard}><GripHorizontal className="placement-drag-grip" size={18} aria-hidden="true"/><div><b>{side === 'back' ? 'Back' : 'Front'} · Block {selectedCell + 1}</b><span title={selectedPlacement ? selectedPlacement.file.name : selectedMasterFile?.name}>{selectedPlacement ? selectedPlacement.file.name : selectedMasterFile?.name || 'Master artwork'}</span></div><button type="button" className="context-close" aria-label="Close block editor" onClick={() => setSelectedCell(null)}><X size={15}/></button></div>
-                <div className="placement-primary-controls">
-                  {selectedBlockMeta && <div className="placement-control-group"><span className="placement-control-caption">Page</span><div className="compact-page-control" aria-label="Block page navigation"><button type="button" aria-label="Previous block page" disabled={selectedBlockPage === 0} onClick={() => updatePlacementPage(selectedBlockPage - 1)}><ChevronLeft size={15}/></button><select aria-label="Block PDF page" value={selectedBlockPage} onChange={event => updatePlacementPage(Number(event.target.value))}>{Array.from({ length: selectedBlockMeta.pages }, (_, pageIndex) => <option key={pageIndex} value={pageIndex}>{pageIndex + 1} / {selectedBlockMeta.pages}</option>)}</select><button type="button" aria-label="Next block page" disabled={selectedBlockPage === selectedBlockMeta.pages - 1} onClick={() => updatePlacementPage(selectedBlockPage + 1)}><ChevronRight size={15}/></button></div></div>}
-                  <label className="placement-control-group"><span className="placement-control-caption">Rotation</span><span className="compact-rotation-control"><RotateCw size={14}/><select aria-label="Block rotation" value={selectedBlockRotation} onChange={event => updatePlacementRotation(Number(event.target.value))}>{[0, 90, 180, 270].map(angle => <option key={angle} value={angle} disabled={classifyPlacement(itemW, itemH, selectedBlockMeta, angle).status === 'oversized'}>{angle}°</option>)}</select></span></label>
-                </div>
-                <div className="placement-context-actions"><button type="button" onClick={changePlacementFile}><FileUp size={13}/> Change PDF</button><button type="button" disabled={!selectedPlacement} onClick={clearPlacement}><RefreshCcw size={13}/> Reset</button></div>
-              </div>}
             </div>
+            {selectedPlacementSide === side && fillMode === 'mixed' && masterConfirmed && selectedGeometryCell && <div className={`placement-context-toolbar ${toolbarBelow ? 'is-below' : ''} ${editorDragging ? 'is-dragging' : ''}`}
+              style={{ left: '50%', top: `${(toolbarBelow ? selectedGeometryCell.y + sideGeometry.itemH : selectedGeometryCell.y) / sheetH * 100}%`, '--editor-drag-x': `${editorOffset.x}px`, '--editor-drag-y': `${editorOffset.y}px` }} role="group" aria-label={`Edit ${side} block ${selectedCell + 1}`}>
+              <div className="placement-context-title" tabIndex={0} aria-label="Move block editor. Drag or use arrow keys. Press Home to reset position." title="Drag to move · double-click to reset position" onPointerDown={startEditorDrag} onPointerMove={moveEditorDrag} onPointerUp={endEditorDrag} onPointerCancel={endEditorDrag} onDoubleClick={() => setEditorOffset({ x: 0, y: 0 })} onKeyDown={moveEditorWithKeyboard}><GripHorizontal className="placement-drag-grip" size={18} aria-hidden="true"/><div><b>{side === 'back' ? 'Back' : 'Front'} · Block {selectedCell + 1}</b><span title={selectedPlacement ? selectedPlacement.file.name : selectedMasterFile?.name}>{selectedPlacement ? selectedPlacement.file.name : selectedMasterFile?.name || 'Master artwork'}</span></div><button type="button" className="context-close" aria-label="Close block editor" onClick={() => setSelectedCell(null)}><X size={15}/></button></div>
+              <div className="placement-primary-controls">
+                {selectedBlockMeta && <div className="placement-control-group"><span className="placement-control-caption">Page</span><div className="compact-page-control" aria-label="Block page navigation"><button type="button" aria-label="Previous block page" disabled={selectedBlockPage === 0} onClick={() => updatePlacementPage(selectedBlockPage - 1)}><ChevronLeft size={15}/></button><select aria-label="Block PDF page" value={selectedBlockPage} onChange={event => updatePlacementPage(Number(event.target.value))}>{Array.from({ length: selectedBlockMeta.pages }, (_, pageIndex) => <option key={pageIndex} value={pageIndex}>{pageIndex + 1} / {selectedBlockMeta.pages}</option>)}</select><button type="button" aria-label="Next block page" disabled={selectedBlockPage === selectedBlockMeta.pages - 1} onClick={() => updatePlacementPage(selectedBlockPage + 1)}><ChevronRight size={15}/></button></div></div>}
+                <label className="placement-control-group"><span className="placement-control-caption">Rotation</span><span className="compact-rotation-control"><RotateCw size={14}/><select aria-label="Block rotation" value={selectedBlockRotation} onChange={event => updatePlacementRotation(Number(event.target.value))}>{[0, 90, 180, 270].map(angle => <option key={angle} value={angle} disabled={classifyPlacement(itemW, itemH, selectedBlockMeta, angle).status === 'oversized'}>{angle}°</option>)}</select></span></label>
+              </div>
+              <div className="placement-context-actions"><button type="button" onClick={changePlacementFile}><FileUp size={13}/> Change PDF</button><button type="button" disabled={!selectedPlacement} onClick={clearPlacement}><RefreshCcw size={13}/> Reset</button></div>
+            </div>}
           </div></div>
         </figure>;})}
       </div>
