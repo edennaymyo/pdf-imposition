@@ -145,6 +145,9 @@ function App() {
   const [rows, setRows] = useState(1);
   const [marks, setMarks] = useState(true);
   const [duploRegMark, setDuploRegMark] = useState(true);
+  const [trimBoxOutline, setTrimBoxOutline] = useState(false);
+  const [trimBoxColor, setTrimBoxColor] = useState('#ff00ff');
+  const [trimBoxOutput, setTrimBoxOutput] = useState('preview');
   const [unit, setUnit] = useState('mm');
   const [paperPreset, setPaperPreset] = useState('13x19');
   const [sourceFile, setSourceFile] = useState(null);
@@ -211,10 +214,10 @@ function App() {
   const inspectionError = inspection?.request === inspectionRequest ? inspection.error : '';
   const settings = useMemo(() => ({
     rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset,
-    horizontalPlacement, sideTrim, marks, duploRegMark, barcodeFile,
+    horizontalPlacement, sideTrim, marks, duploRegMark, trimBoxOutline, trimBoxColor, trimBoxOutput, barcodeFile,
     duplex, backRotation, flipEdge, finishingSide, fillMode, mixedPlacements, mixedBackPlacements,
   }), [rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset,
-    horizontalPlacement, sideTrim, marks, duploRegMark, barcodeFile, duplex, backRotation, flipEdge, finishingSide,
+    horizontalPlacement, sideTrim, marks, duploRegMark, trimBoxOutline, trimBoxColor, trimBoxOutput, barcodeFile, duplex, backRotation, flipEdge, finishingSide,
     fillMode, mixedPlacements, mixedBackPlacements]);
   const planned = useMemo(() => {
     try { return { plan: planJob(meta, backMeta, settings), error: '' }; }
@@ -435,7 +438,8 @@ function App() {
       id: existing?.id || (globalThis.crypto?.randomUUID?.() ?? `preset-${Date.now()}`),
       name: cleanName,
       paperPreset, sheetW, sheetH, rotation, rotationPattern, cols, rows, gutterCut, gutterSlit,
-      topTrim: topOffset, horizontalPlacement, sideTrim, marks, duploRegMark, barcodeName,
+      topTrim: topOffset, horizontalPlacement, sideTrim, marks, duploRegMark,
+      trimBoxOutline, trimBoxColor, trimBoxOutput, barcodeName,
       duplex, backInput, backRotation, flipEdge, finishingSide,
       frontPage: meta?.pageIndex ?? selectedPage, backPage: backMeta?.pageIndex ?? backSelectedPage,
     };
@@ -453,7 +457,8 @@ function App() {
     setSheetW(preset.sheetW); setSheetH(preset.sheetH);
     setRotation(preset.rotation); setRotationPattern(preset.rotationPattern || 'same'); setCols(preset.cols); setRows(preset.rows);
     setGutterCut(preset.gutterCut); setGutterSlit(preset.gutterSlit);
-    setTopOffset(preset.topTrim); setHorizontalPlacement(preset.horizontalPlacement || 'center'); setSideTrim(preset.sideTrim ?? 10); setMarks(preset.marks); setDuploRegMark(preset.duploRegMark);
+    setTopOffset(preset.topTrim); setHorizontalPlacement(preset.horizontalPlacement || 'center'); setSideTrim(preset.sideTrim ?? 10); setMarks(preset.marks ?? true); setDuploRegMark(preset.duploRegMark);
+    setTrimBoxOutline(Boolean(preset.trimBoxOutline)); setTrimBoxColor(preset.trimBoxColor || '#ff00ff'); setTrimBoxOutput(preset.trimBoxOutput || 'preview');
     setDuplex(Boolean(preset.duplex)); setBackInput(preset.backInput || 'same');
     setSelectedPage(preset.frontPage ?? 0); setBackSelectedPage(preset.backPage ?? 1);
     setBackRotation(preset.backRotation ?? 0); setFlipEdge(preset.flipEdge || 'long'); setFinishingSide(preset.finishingSide || 'front');
@@ -485,7 +490,7 @@ function App() {
     setDuplex(false); setProofView('both'); setExportSide('both'); setFlipEdge('long'); setFinishingSide('front');
     setPaperPreset('13x19'); setSheetW(330.2); setSheetH(482.6); setCols(1); setRows(1);
     setGutterCut(5); setGutterSlit(5); setTopOffset(10); setHorizontalPlacement('center'); setSideTrim(10);
-    setMarks(true); setDuploRegMark(true); setBarcodeFile(null); setBarcodeName('');
+    setMarks(true); setDuploRegMark(true); setTrimBoxOutline(false); setTrimBoxColor('#ff00ff'); setTrimBoxOutput('preview'); setBarcodeFile(null); setBarcodeName('');
     setMasterConfirmed(false); setFillMode('repeat'); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); setPlacementNotice('');
     setPresetName(''); setSelectedPresetId(''); setPresetsOpen(false); setBarcodeOpen(false);
     setEditingSide('front'); changeInspectorTab('artwork'); setExportOpen(false);
@@ -708,6 +713,8 @@ function App() {
             {index === 0 && <><div className="sheet-dimension dimension-width" aria-label={`Sheet width ${displaySheetInches(sheetW)}`}><span>{displaySheetInches(sheetW)}</span></div><div className="sheet-dimension dimension-height" aria-label={`Sheet height ${displaySheetInches(sheetH)}`}><span>{displaySheetInches(sheetH)}</span></div></>}
             <div className="sheet proof-sheet" style={{ aspectRatio: sheetW / sheetH, '--sheet-ratio': sheetW / sheetH }}>
               {proofImages[side === 'front' ? 0 : 1] ? <img className="proof-image" src={proofImages[side === 'front' ? 0 : 1]} alt={`${side === 'front' ? 'Front' : 'Back'} exported PDF proof`}/> : <div className="proof-empty">{processing ? 'Generating output proof…' : statusError || (sourceFile && !geometricFit ? 'Front or Back layout does not fit this sheet' : 'Upload a PDF to generate the exact output proof')}</div>}
+              {trimBoxOutline && trimBoxOutput === 'preview' && sideGeometry && <svg className="trimbox-outline-overlay" viewBox={`0 0 ${sheetW} ${sheetH}`} aria-label={`${side === 'front' ? 'Front' : 'Back'} TrimBox preview guide`}>
+                {sideGeometry.cells.map(cell => <rect key={cell.slotIndex} x={cell.x} y={cell.y} width={sideGeometry.itemW} height={sideGeometry.itemH} style={{ stroke: trimBoxColor }}/>)}</svg>}
               {fillMode === 'mixed' && masterConfirmed && sideGeometry && <div className="placement-overlay" aria-label={`${side === 'back' ? 'Back' : 'Front'} mixed artwork slots`}>{sideGeometry.cells.map(cell => {
                 const sidePlacements = side === 'back' ? mixedBackPlacements : mixedPlacements;
                 const replacement = sidePlacements[cell.slotIndex];
@@ -748,7 +755,7 @@ function App() {
           <p>Inspection view only. The PDF artwork remains at its original 100% size and original aspect ratio.</p>
         </section>
       </div>}
-      <footer><button type="button" className={`proof-status ${exportReady ? 'ok' : 'warn'}`} disabled={exportReady || processing} onClick={reviewIssue}>{exportReady ? <CheckCircle2/> : <AlertTriangle/>} {processing ? 'Updating proof…' : !sourceFile ? 'Choose artwork →' : meta && !masterConfirmed ? 'Confirm item size →' : barcodeNeedsAttention ? 'Review barcode →' : !outputBytes ? 'Review artwork / layout →' : 'Preview matches export'}</button><span>Finished · {display(itemW)} × {display(itemH)}</span><span>{cols} × {rows} · {cols * rows} up{duplex ? ' / side' : ''}</span></footer>
+      <footer><button type="button" className={`proof-status ${exportReady ? 'ok' : 'warn'}`} disabled={exportReady || processing} onClick={reviewIssue}>{exportReady ? <CheckCircle2/> : <AlertTriangle/>} {processing ? 'Updating proof…' : !sourceFile ? 'Choose artwork →' : meta && !masterConfirmed ? 'Confirm item size →' : barcodeNeedsAttention ? 'Review barcode →' : !outputBytes ? 'Review artwork / layout →' : trimBoxOutline && trimBoxOutput === 'preview' ? 'TrimBox guide · not exported' : 'Preview matches export'}</button><span>Finished · {display(itemW)} × {display(itemH)}</span><span>{cols} × {rows} · {cols * rows} up{duplex ? ' / side' : ''}</span></footer>
     </section>
 
     <aside className="inspector redesigned-inspector">
@@ -788,11 +795,22 @@ function App() {
         <details className="advanced output-details"><summary>Output size & bleed</summary><div className="details-body"><div className="summary-grid"><span>Finished item<b>{display(itemW)} × {display(itemH)}</b></span><span>Layout<b>{display(layoutW)} × {display(layoutH)}</b></span><span>Outer bleed<b>T {display(appliedOuterBleed.top)} · B {display(appliedOuterBleed.bottom)} · L {display(appliedOuterBleed.left)} · R {display(appliedOuterBleed.right)}</b></span></div>{duplex && plan?.sides[1] && <p className="hint">Back outer bleed: {Object.entries(plan.sides[1].outer).map(([side, value]) => `${side} ${display(value)}`).join(' · ')}</p>}</div></details>
         {(outerBleedShortfall || plan?.sides.some(side => !side.marksOnSheet)) && <div className="layout-advisory">{outerBleedShortfall && <p>Some source bleed is below 3 mm. Available bleed is used without stretching.</p>}{plan?.sides.some(side => !side.marksOnSheet) && <p>Some trim marks fall outside the sheet. Increase margins for full marks.</p>}</div>}
       </div>
+      <div className="tab-panel marks-panel" role="tabpanel" id="panel-marks" aria-labelledby="tab-marks" hidden={inspectorTab !== 'marks'}>
+        <div className="panel-heading"><span className="eyebrow">03 / OUTPUT MARKS</span><h1>Marks</h1><p className="section-intro">Control item outlines and sheet finishing marks.</p></div>
+        <section className="mark-setting-card"><label className="toggle-row mark-main-toggle"><span><b>TrimBox outline</b><small>Exact confirmed TrimBox · 0 mm offset</small></span><input aria-label="TrimBox outline" type="checkbox" checked={trimBoxOutline} onChange={event => setTrimBoxOutline(event.target.checked)}/></label>
+          {trimBoxOutline && <div className="mark-setting-options">
+            <fieldset className="mark-color-picker"><legend>Color</legend><div className="mark-color-options">{[['#000000','Black 100K'],['#00ffff','Cyan'],['#ff00ff','Magenta'],['#ffff00','Yellow']].map(([color,label]) => <button key={color} type="button" className={trimBoxColor.toLowerCase() === color ? 'is-selected' : ''} aria-label={`${label} TrimBox color`} aria-pressed={trimBoxColor.toLowerCase() === color} title={label} style={{ '--mark-color': color }} onClick={() => setTrimBoxColor(color)}><span/></button>)}<label className="custom-mark-color" title="Custom color"><input aria-label="Custom TrimBox color" type="color" value={trimBoxColor} onChange={event => setTrimBoxColor(event.target.value)}/><span style={{ '--mark-color': trimBoxColor }}/></label></div></fieldset>
+            <SegmentedChoice label="Output" name="TrimBox output" value={trimBoxOutput} options={[{ value: 'preview', label: 'Preview only' }, { value: 'export', label: 'Include in PDF' }]} onChange={setTrimBoxOutput}/>
+            <div className="calculation mark-spec"><span>Position</span><b>Exact TrimBox · 0 mm offset · 0.25 pt</b></div>
+          </div>}
+        </section>
+        <section><h2>Sheet marks</h2><label className="toggle-row"><span><b>Production trim marks</b><small>Corner, gutter cut and gutter slit marks</small></span><input type="checkbox" checked={marks} onChange={event => setMarks(event.target.checked)}/></label>{barcodeFile && marks && <p className="hint barcode-mark-notice">Barcode on: top-right corner trim marks hidden {duplex ? finishingSide === 'both' ? 'on both sides' : `on the ${finishingSide}` : 'on this sheet'}. Select No barcode to restore them.</p>}</section>
+        <div className="panel-next"><span>Continue to machine finishing?</span><button type="button" onClick={() => changeInspectorTab('duplo')}>Duplo setup →</button></div>
+      </div>
       <div className="tab-panel" role="tabpanel" id="panel-duplo" aria-labelledby="tab-duplo" hidden={inspectorTab !== 'duplo'}>
-        <div className="panel-heading"><span className="eyebrow">03 / FINISH</span><h1>Duplo setup</h1></div>
-        {barcodeFile && marks && <p className="hint barcode-mark-notice">Barcode on: top-right corner trim marks hidden {duplex ? finishingSide === 'both' ? 'on both sides' : `on the ${finishingSide}` : 'on this sheet'}. Select No barcode to restore them. Registration mark is unchanged.</p>}
+        <div className="panel-heading"><span className="eyebrow">04 / FINISH</span><h1>Duplo setup</h1></div>
         <section><h2>Duplo finishing</h2><div className="two"><NumberField label="Lead Trim" value={topOffset} setValue={setTopOffset} max={100} unit={unit} factor={factor}/><NumberField label="Side Trim" value={calculatedSideTrim} setValue={setSideTrim} max={100} unit={unit} factor={factor} disabled={horizontalPlacement === 'center'}/></div><SegmentedChoice label="Horizontal placement" value={horizontalPlacement} options={[{ value: 'center', label: 'Centered' }, { value: 'manual', label: 'Manual Side Trim' }]} onChange={mode => { if (mode === 'manual') setSideTrim(calculatedSideTrim); setHorizontalPlacement(mode); }}/><div className="two"><NumberField label="Gutter Cut" value={gutterCut} setValue={setGutterCut} unit={unit} factor={factor}/><NumberField label="Gutter Slit" value={gutterSlit} setValue={setGutterSlit} unit={unit} factor={factor}/></div><p className="hint">Lead Trim is measured from the sheet top to the first finished cut line. Side Trim is measured from the sheet right edge to the first finished slit line.</p></section>
-        <section className="switches">{duplex && <label className="select"><span>Duplo barcode & registration on</span><select aria-label="Finishing side" value={finishingSide} onChange={event => setFinishingSide(event.target.value)}><option value="front">Front · finishing feed side</option><option value="back">Back · finishing feed side</option><option value="both">Both sides</option></select></label>}<label className="toggle-row"><span>Production trim marks</span><input type="checkbox" checked={marks} onChange={event => setMarks(event.target.checked)}/></label><label className="toggle-row"><span>Duplo registration mark</span><input type="checkbox" checked={duploRegMark} onChange={event => setDuploRegMark(event.target.checked)}/></label></section>
+        <section className="switches">{duplex && <label className="select"><span>Duplo barcode & registration on</span><select aria-label="Finishing side" value={finishingSide} onChange={event => setFinishingSide(event.target.value)}><option value="front">Front · finishing feed side</option><option value="back">Back · finishing feed side</option><option value="both">Both sides</option></select></label>}<label className="toggle-row"><span>Duplo registration mark</span><input type="checkbox" checked={duploRegMark} onChange={event => setDuploRegMark(event.target.checked)}/></label></section>
         <details id="barcode-details" className="advanced" open={barcodeOpen} onToggle={event => setBarcodeOpen(event.currentTarget.open)}><summary>Job barcode <span className="details-value">{barcodeName ? barcodeName.replace(/\.pdf$/i, '') : 'None'}</span></summary><div className="details-body"><div className="barcode-actions"><button type="button" className="secondary" onClick={connectBarcodeDirectory}><FolderOpen size={14}/> {barcodeDirectoryHandle ? 'Reconnect folder' : 'Choose barcode folder'}</button><span className="barcode-status">{barcodeFolderStatus}</span></div><label className="session-loader"><input className="barcode-file-input" type="file" accept="application/pdf" multiple webkitdirectory="" onChange={loadBarcodeFilesForSession}/><span>Load folder for this session</span></label><label className="select"><span>Job barcode</span><select aria-label="Job barcode" value={barcodeName} onChange={event => setBarcodeFromEntry(event.target.value)}><option value="">No barcode</option>{barcodeEntries.map(entry => <option key={entry.name} value={entry.name}>{entry.name.replace(/\.pdf$/i, '')}</option>)}</select></label><div className="calculation barcode-spec"><span>Bottom crop · white knockout · top layer</span><b>{display(BARCODE_HEIGHT_MM)} high · top {display(BARCODE_TOP_OFFSET_MM)} · right {display(BARCODE_RIGHT_OFFSET_MM)}</b></div></div></details>
         <div className={canExport ? 'summary compact-check' : 'summary warning compact-check'}><span>DC-616 CHECK</span><b>{!sourceFile ? 'Choose artwork to check fit' : barcodeNeedsAttention ? 'Review barcode before export' : canExport ? 'Sheet & layout fit' : 'Review artwork and layout'}</b><small>Lead {display(topOffset)} · Side {display(calculatedSideTrim)} · Cut {display(gutterCut)} · Slit {display(gutterSlit)}</small></div>
       </div>
@@ -805,7 +823,8 @@ function App() {
       <div className="size-confirm-actions"><label className="secondary size-replace"><input type="file" accept="application/pdf" onChange={upload}/><FileUp size={15}/> Choose another PDF</label><button type="button" className="primary-action" onClick={confirmMasterSize}><CheckCircle2 size={16}/> Confirm finished size</button></div>
     </section></div>}
     {exportOpen && <ExportDialog duplex={duplex} side={exportSide} onSideChange={setExportSide} onClose={() => setExportOpen(false)}
-      onDownload={downloadOutput} ready={exportReady} sheetLabel={sheetLabel} total={cols * rows} issue={issueText}/>}
+      onDownload={downloadOutput} ready={exportReady} sheetLabel={sheetLabel} total={cols * rows} issue={issueText}
+      previewGuide={trimBoxOutline && trimBoxOutput === 'preview'}/>}
   </main>;
 }
 

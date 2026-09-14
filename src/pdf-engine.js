@@ -1,4 +1,4 @@
-import { degrees, PDFDocument, rgb } from 'pdf-lib';
+import { cmyk, degrees, PDFDocument, rgb } from 'pdf-lib';
 const MM_PER_POINT = 25.4 / 72;
 const POINTS_PER_MM = 72 / 25.4;
 const MIN_SHEET_MM = 210;
@@ -14,6 +14,7 @@ const BARCODE_TOP_OFFSET_MM = 4;
 const BARCODE_RIGHT_OFFSET_MM = 25;
 const BARCODE_HEIGHT_MM = 5;
 const BARCODE_KNOCKOUT_PADDING_MM = 0.5;
+const TRIMBOX_STROKE_POINTS = 0.25;
 
 function sourceToOutputSides(rotation) {
   if (rotation === 90) return { top: 'left', bottom: 'right', left: 'bottom', right: 'top' };
@@ -119,6 +120,29 @@ function drawProductionMarks(page, geometry, hideTopRight = false) {
       line(right + gap, cutY, right + gap + length, cutY);
     }
   }
+}
+
+function trimBoxMarkColor(hex = '#ff00ff') {
+  const normalized = hex.toLowerCase();
+  if (normalized === '#000000') return cmyk(0, 0, 0, 1);
+  if (normalized === '#00ffff') return cmyk(1, 0, 0, 0);
+  if (normalized === '#ff00ff') return cmyk(0, 1, 0, 0);
+  if (normalized === '#ffff00') return cmyk(0, 0, 1, 0);
+  const match = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!match) return cmyk(0, 1, 0, 0);
+  const value = Number.parseInt(match[1], 16);
+  return rgb(((value >> 16) & 255) / 255, ((value >> 8) & 255) / 255, (value & 255) / 255);
+}
+
+function drawTrimBoxOutlines(page, geometry, sheetHeight, color) {
+  for (const cell of geometry.cells) page.drawRectangle({
+    x: cell.x * POINTS_PER_MM,
+    y: (sheetHeight - cell.y - geometry.itemH) * POINTS_PER_MM,
+    width: geometry.itemW * POINTS_PER_MM,
+    height: geometry.itemH * POINTS_PER_MM,
+    borderColor: trimBoxMarkColor(color),
+    borderWidth: TRIMBOX_STROKE_POINTS,
+  });
 }
 
 function drawDuploRegistrationMark(page) {
@@ -327,6 +351,9 @@ export async function buildJobPdf(front, back, settings) {
       }
       drawEmbeddedArtwork(outputPage, embedded, trim, bleed, cell.rotation,
         cell.artX * POINTS_PER_MM, (settings.sheetH - cell.artY - cell.artH) * POINTS_PER_MM);
+    }
+    if (settings.trimBoxOutline && settings.trimBoxOutput === 'export') {
+      drawTrimBoxOutlines(outputPage, geometry, settings.sheetH, settings.trimBoxColor);
     }
     const barcodeOnSide = Boolean(settings.barcodeFile) && finishingOnSide(geometry.side, settings);
     if (settings.marks) drawProductionMarks(outputPage, {

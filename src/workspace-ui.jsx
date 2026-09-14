@@ -21,7 +21,7 @@ export function SegmentedChoice({ label, name, value, options, onChange }) {
 }
 
 export function InspectorTabs({ value, onChange }) {
-  const tabs = ['artwork', 'layout', 'duplo'];
+  const tabs = ['artwork', 'layout', 'marks', 'duplo'];
   function navigate(event, index) {
     const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length
       : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length
@@ -82,7 +82,7 @@ export function PatternPicker({ value, onChange, duplex }) {
   </fieldset>;
 }
 
-export function ExportDialog({ duplex, side, onSideChange, onClose, onDownload, ready, sheetLabel, total, issue }) {
+export function ExportDialog({ duplex, side, onSideChange, onClose, onDownload, ready, sheetLabel, total, issue, previewGuide = false }) {
   const ref = useRef(null);
   useEffect(() => {
     const dialog = ref.current;
@@ -92,7 +92,7 @@ export function ExportDialog({ duplex, side, onSideChange, onClose, onDownload, 
   }, []);
   return <dialog ref={ref} className="export-dialog" aria-labelledby="export-title" onCancel={onClose} onClick={event => { if (event.target === ref.current) onClose(); }}>
     <div className="export-dialog-body"><div className="dialog-heading"><div><span className="eyebrow">OUTPUT</span><h2 id="export-title">Export PDF</h2></div><button type="button" className="close-dialog" aria-label="Close export" onClick={onClose}><X size={20}/></button></div>
-      <p className="section-intro">The PDF uses the same output shown in your proof.</p>
+      <p className="section-intro">{previewGuide ? 'The TrimBox outline is a preview guide and will not be included in the PDF.' : 'The PDF uses the same output shown in your proof.'}</p>
       {duplex && <label className="select"><span>Include in export</span><select autoFocus aria-label="Export pages" value={side} onChange={event => onSideChange(event.target.value)}><option value="both">Front + Back · 2-page PDF</option><option value="front">Front only</option><option value="back">Back only</option></select></label>}
       <div className="export-recap"><span>Sheet<strong>{sheetLabel}</strong></span><span>Items<strong>{total} up{duplex ? ' / side' : ''}</strong></span><span>PDF order<strong>{!duplex || side === 'front' ? 'Front' : side === 'back' ? 'Back' : '1. Front → 2. Back'}</strong></span></div>
       {duplex && <p className="hint">Print a test sheet at 100%. Match the printer’s duplex setting to Sheet turn.</p>}
