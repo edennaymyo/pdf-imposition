@@ -3,17 +3,15 @@ import { createRoot } from 'react-dom/client';
 import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Download, FileUp, FolderOpen, GripHorizontal, Minus, Plus, RefreshCcw, RotateCw, Save, Settings2, Trash2, X, ZoomIn } from 'lucide-react';
 import { PDFDocument } from 'pdf-lib';
 import { buildJobPdf, buildPlacementPreviewPdf, planJob, calculateOuterBleed, classifyPlacement, inspectBarcode, extractOutputSide, finishedSize } from './pdf-engine.js';
-import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
-import pdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
+import pdfJsWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
 import './styles.css';
 import './duplo.css';
 import { ArtworkDirection, ExportDialog, InspectorTabs, PatternPicker, SegmentedChoice } from './workspace-ui.jsx';
 import { SourceCard } from './workspace-ui.jsx';
 import './workspace-ui.css';
 
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker;
-
 const MM_PER_POINT = 25.4 / 72;
+const PREVIEW_SCALE = 1;
 const MIN_SHEET_MM = 210;
 const MAX_SHEET_WIDTH_MM = 330.2;
 const MAX_SHEET_HEIGHT_MM = 482.6;
@@ -27,6 +25,77 @@ const STORAGE_DB_VERSION = 1;
 const STORAGE_STORE_NAME = 'handles';
 const BARCODE_DIRECTORY_KEY = 'barcode-directory';
 const PRESET_STORAGE_KEY = 'duplo-imposition-presets-v1';
+const inspectedDocuments = new WeakMap();
+let pdfRendererPromise;
+let pdfBuildWorker;
+let pdfBuildRequestId = 0;
+const pendingPdfBuilds = new Map();
+
+function getPdfRenderer() {
+  if (!pdfRendererPromise) {
+    pdfRendererPromise = import('pdfjs-dist/legacy/build/pdf.mjs').then(pdfjs => {
+      pdfjs.GlobalWorkerOptions.workerSrc = pdfJsWorkerUrl;
+      return pdfjs;
+    });
+  }
+  return pdfRendererPromise;
+}
+
+function getPdfBuildWorker() {
+  if (pdfBuildWorker || typeof Worker === 'undefined') return pdfBuildWorker;
+  pdfBuildWorker = new Worker(new URL('./pdf-build.worker.js', import.meta.url), { type: 'module' });
+  pdfBuildWorker.onmessage = event => {
+    const pending = pendingPdfBuilds.get(event.data.id);
+    if (!pending) return;
+    pendingPdfBuilds.delete(event.data.id);
+    if (event.data.error) pending.reject(new Error(event.data.error));
+    else pending.resolve(event.data.bytes);
+  };
+  pdfBuildWorker.onerror = event => {
+    const failure = new Error(event.message || 'PDF worker failed.');
+    for (const pending of pendingPdfBuilds.values()) pending.reject(failure);
+    pendingPdfBuilds.clear();
+    pdfBuildWorker?.terminate();
+    pdfBuildWorker = undefined;
+  };
+  return pdfBuildWorker;
+}
+
+function runPdfBuildTask(type, payload) {
+  const worker = getPdfBuildWorker();
+  if (!worker) {
+    return type === 'placement-preview'
+      ? buildPlacementPreviewPdf(payload.input, payload.itemWidth, payload.itemHeight, payload.rotation)
+      : buildJobPdf(payload.front, payload.back, payload.settings);
+  }
+  const id = ++pdfBuildRequestId;
+  return new Promise((resolve, reject) => {
+    pendingPdfBuilds.set(id, { resolve, reject });
+    worker.postMessage({ id, type, payload });
+  });
+}
+
+function disposePdfBuildWorker() {
+  pdfBuildWorker?.terminate();
+  pdfBuildWorker = undefined;
+  const failure = new Error('PDF worker stopped.');
+  for (const pending of pendingPdfBuilds.values()) pending.reject(failure);
+  pendingPdfBuilds.clear();
+}
+
+function getInspectedDocument(file) {
+  let documentPromise = inspectedDocuments.get(file);
+  if (!documentPromise) {
+    documentPromise = file.arrayBuffer().then(bytes => PDFDocument.load(bytes, { updateMetadata: false }));
+    inspectedDocuments.set(file, documentPromise);
+    documentPromise.catch(() => inspectedDocuments.delete(file));
+  }
+  return documentPromise;
+}
+
+function revokeImageUrls(urls = []) {
+  for (const url of urls) if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
+}
 
 const numberValue = value => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
 
@@ -100,8 +169,7 @@ function NumberField({ label, value, setValue, min = 0, max = 999, unit = 'mm', 
 }
 
 async function inspectPdf(file, pageIndex = 0) {
-  const bytes = await file.arrayBuffer();
-  const document = await PDFDocument.load(bytes, { updateMetadata: false });
+  const document = await getInspectedDocument(file);
   const pages = document.getPageCount();
   const safePageIndex = Math.max(0, Math.min(pages - 1, pageIndex));
   const page = document.getPage(safePageIndex);
@@ -120,21 +188,31 @@ async function inspectPdf(file, pageIndex = 0) {
 }
 
 async function renderOutputPdf(bytes) {
+  const pdfjs = await getPdfRenderer();
   const task = pdfjs.getDocument({ data: new Uint8Array(bytes) });
+  const images = [];
   try {
     const pdf = await task.promise;
-    const images = [];
     for (let index = 1; index <= pdf.numPages; index++) {
       const page = await pdf.getPage(index);
-      const viewport = page.getViewport({ scale: 1.5 });
+      const viewport = page.getViewport({ scale: PREVIEW_SCALE });
       const canvas = document.createElement('canvas');
       canvas.width = Math.ceil(viewport.width);
       canvas.height = Math.ceil(viewport.height);
-      await page.render({ canvasContext: canvas.getContext('2d', { alpha: false }), viewport }).promise;
-      images.push(canvas.toDataURL('image/png'));
+      const canvasContext = canvas.getContext('2d', { alpha: false, desynchronized: true });
+      await page.render({ canvasContext, viewport, intent: 'display' }).promise;
+      const blob = await new Promise((resolve, reject) => canvas.toBlob(
+        value => value ? resolve(value) : reject(new Error('Preview image encoding failed.')),
+        'image/png',
+      ));
+      images.push(URL.createObjectURL(blob));
       page.cleanup();
+      if (index < pdf.numPages) await new Promise(resolve => requestAnimationFrame(resolve));
     }
     return images;
+  } catch (failure) {
+    revokeImageUrls(images);
+    throw failure;
   } finally { await task.destroy(); }
 }
 
@@ -200,6 +278,9 @@ function App() {
   const [editorOffset, setEditorOffset] = useState({ x: 0, y: 0 });
   const [editorDragging, setEditorDragging] = useState(false);
   const editorDrag = useRef(null);
+  const editorToolbar = useRef(null);
+  const proofImageUrls = useRef([]);
+  const proofBuildQueue = useRef(Promise.resolve());
   const slotUploadInput = useRef(null);
   const pendingPlacementCell = useRef(null);
   const pendingPlacementSide = useRef('front');
@@ -238,7 +319,7 @@ function App() {
   const canExport = masterConfirmed && geometricFit && (!barcodeName || Boolean(barcodeFile));
   const proofRequest = useMemo(() => ({ inspectionRequest, meta, backMeta, settings }), [inspectionRequest, meta, backMeta, settings]);
   const outputBytes = proof?.request === proofRequest ? proof.bytes : null;
-  const proofImages = proof?.request === proofRequest ? proof.images : [];
+  const proofImages = proof?.images || [];
   const processing = busy || Boolean(sourceFile && inspection?.request !== inspectionRequest);
   const statusError = error || inspectionError || (sourceFile && !processing ? planned.error : '');
   const shownSides = duplex ? (proofView === 'both' ? ['front', 'back'] : [proofView]) : ['front'];
@@ -279,6 +360,16 @@ function App() {
     });
   };
 
+  const replaceProofImages = (nextProof = null) => {
+    const previousUrls = proofImageUrls.current;
+    proofImageUrls.current = nextProof?.images || [];
+    setProof(nextProof);
+    if (previousUrls.length) requestAnimationFrame(() => revokeImageUrls(previousUrls));
+  };
+
+  useEffect(() => () => revokeImageUrls(proofImageUrls.current), []);
+  useEffect(() => () => disposePdfBuildWorker(), []);
+
   useEffect(() => {
     let cancelled = false;
     if (!sourceFile) { setInspection(null); return; }
@@ -318,6 +409,7 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
+    let imageUrl = '';
     if (!previewCell || !previewGeometry || !previewCellGeometry || !previewFile || !previewMeta) {
       setBlockPreview({ image: '', error: '' });
       return () => { cancelled = true; };
@@ -325,20 +417,22 @@ function App() {
     setBlockPreview({ image: '', error: '' });
     const renderBlock = async () => {
       try {
-        const bytes = await buildPlacementPreviewPdf(
-          { file: previewFile, meta: previewMeta, pageIndex: previewPageIndex },
-          previewGeometry.itemW,
-          previewGeometry.itemH,
-          previewCellGeometry.rotation,
-        );
+        const bytes = await runPdfBuildTask('placement-preview', {
+          input: { file: previewFile, meta: previewMeta, pageIndex: previewPageIndex },
+          itemWidth: previewGeometry.itemW,
+          itemHeight: previewGeometry.itemH,
+          rotation: previewCellGeometry.rotation,
+        });
         const [image] = await renderOutputPdf(bytes);
+        imageUrl = image;
         if (!cancelled) setBlockPreview({ image, error: '' });
+        else revokeImageUrls([image]);
       } catch (failure) {
         if (!cancelled) setBlockPreview({ image: '', error: `Block preview failed: ${failure.message}` });
       }
     };
     renderBlock();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; revokeImageUrls([imageUrl]); };
   }, [previewCell, previewGeometry, previewCellGeometry, previewFile, previewMeta, previewPageIndex]);
 
   useEffect(() => {
@@ -355,6 +449,8 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
+    let idleId;
+    let timerId;
     const restoreBarcodeDirectory = async () => {
       try {
         const handle = await getStoredHandle(BARCODE_DIRECTORY_KEY);
@@ -374,35 +470,45 @@ function App() {
         if (!cancelled) setBarcodeFolderStatus('Choose the barcode PDF folder once');
       }
     };
-    restoreBarcodeDirectory();
-    return () => { cancelled = true; };
+    if ('requestIdleCallback' in window) idleId = window.requestIdleCallback(restoreBarcodeDirectory, { timeout: 1200 });
+    else timerId = window.setTimeout(restoreBarcodeDirectory, 250);
+    return () => {
+      cancelled = true;
+      if (idleId) window.cancelIdleCallback(idleId);
+      if (timerId) window.clearTimeout(timerId);
+    };
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    setProof(null);
     if (!sourceFile || !meta || !masterConfirmed || !geometricFit || (duplex && !backMeta)) {
+      replaceProofImages(null);
       setBusy(false);
       return () => { cancelled = true; };
     }
     setBusy(true);
     // Debounce stepper changes; never leave a stale proof exportable while recomputing.
-    const timer = setTimeout(async () => {
-      try {
-        const bytes = await buildJobPdf(
-          { file: sourceFile, meta, pageIndex: meta.pageIndex },
-          duplex ? { file: effectiveBackFile, meta: backMeta, pageIndex: backMeta.pageIndex } : null,
-          settings,
-        );
+    const timer = setTimeout(() => {
+      const generateProof = async () => {
         if (cancelled) return;
-        const images = await renderOutputPdf(bytes);
-        if (!cancelled) { setProof({ request: proofRequest, bytes, images }); setError(''); }
-      } catch (failure) {
-        if (!cancelled) setError(`Preview generation failed: ${failure.message}`);
-      } finally {
-        if (!cancelled) setBusy(false);
-      }
-    }, 120);
+        try {
+          const bytes = await runPdfBuildTask('job', {
+            front: { file: sourceFile, meta, pageIndex: meta.pageIndex },
+            back: duplex ? { file: effectiveBackFile, meta: backMeta, pageIndex: backMeta.pageIndex } : null,
+            settings,
+          });
+          if (cancelled) return;
+          const images = await renderOutputPdf(bytes);
+          if (!cancelled) { replaceProofImages({ request: proofRequest, bytes, images }); setError(''); }
+          else revokeImageUrls(images);
+        } catch (failure) {
+          if (!cancelled) setError(`Preview generation failed: ${failure.message}`);
+        } finally {
+          if (!cancelled) setBusy(false);
+        }
+      };
+      proofBuildQueue.current = proofBuildQueue.current.then(generateProof, generateProof);
+    }, 180);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [proofRequest, geometricFit, masterConfirmed]);
 
@@ -513,7 +619,7 @@ function App() {
   };
 
   const clearFront = () => {
-    setSourceFile(null); setSelectedPage(0); setProof(null); setError(''); setMasterConfirmed(false);
+    setSourceFile(null); setSelectedPage(0); replaceProofImages(null); setError(''); setMasterConfirmed(false);
     setFillMode('repeat'); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); setPlacementNotice('');
   };
   const newJob = () => {
@@ -608,11 +714,21 @@ function App() {
     if (!drag || drag.pointerId !== event.pointerId) return;
     const x = Math.max(drag.minX, Math.min(drag.maxX, drag.originX + event.clientX - drag.startX));
     const y = Math.max(drag.minY, Math.min(drag.maxY, drag.originY + event.clientY - drag.startY));
-    setEditorOffset({ x, y });
+    drag.currentX = x;
+    drag.currentY = y;
+    const toolbar = editorToolbar.current;
+    if (toolbar) {
+      toolbar.style.setProperty('--editor-drag-x', `${x}px`);
+      toolbar.style.setProperty('--editor-drag-y', `${y}px`);
+    }
   };
   const endEditorDrag = event => {
     if (editorDrag.current?.pointerId !== event.pointerId) return;
     event.currentTarget.releasePointerCapture?.(event.pointerId);
+    setEditorOffset({
+      x: editorDrag.current.currentX ?? editorDrag.current.originX,
+      y: editorDrag.current.currentY ?? editorDrag.current.originY,
+    });
     editorDrag.current = null;
     setEditorDragging(false);
   };
@@ -766,7 +882,7 @@ function App() {
                 </div>;
               })}</div>}
             </div>
-            {selectedPlacementSide === side && fillMode === 'mixed' && masterConfirmed && selectedGeometryCell && <div className={`placement-context-toolbar ${toolbarBelow ? 'is-below' : ''} ${editorDragging ? 'is-dragging' : ''}`}
+            {selectedPlacementSide === side && fillMode === 'mixed' && masterConfirmed && selectedGeometryCell && <div ref={editorToolbar} className={`placement-context-toolbar ${toolbarBelow ? 'is-below' : ''} ${editorDragging ? 'is-dragging' : ''}`}
               style={{ left: '50%', top: `${(toolbarBelow ? selectedGeometryCell.y + sideGeometry.itemH : selectedGeometryCell.y) / sheetH * 100}%`, '--editor-drag-x': `${editorOffset.x}px`, '--editor-drag-y': `${editorOffset.y}px` }} role="group" aria-label={`Edit ${side} block ${selectedCell + 1}`}>
               <div className="placement-context-title" tabIndex={0} aria-label="Move block editor. Drag or use arrow keys. Press Home to reset position." title="Drag to move · double-click to reset position" onPointerDown={startEditorDrag} onPointerMove={moveEditorDrag} onPointerUp={endEditorDrag} onPointerCancel={endEditorDrag} onDoubleClick={() => setEditorOffset({ x: 0, y: 0 })} onKeyDown={moveEditorWithKeyboard}><GripHorizontal className="placement-drag-grip" size={18} aria-hidden="true"/><div><b>{side === 'back' ? 'Back' : 'Front'} · Block {selectedCell + 1}</b><span title={selectedPlacement ? selectedPlacement.file.name : selectedMasterFile?.name}>{selectedPlacement ? selectedPlacement.file.name : selectedMasterFile?.name || 'Master artwork'}</span></div><button type="button" className="context-close" aria-label="Close block editor" onClick={() => setSelectedCell(null)}><X size={15}/></button></div>
               <div className="placement-primary-controls">
