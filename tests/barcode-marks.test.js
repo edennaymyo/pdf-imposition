@@ -30,7 +30,7 @@ test('barcode on hides exactly the top-right corner on barcode sides; off restor
       const settings = { sheetW: 330.2, sheetH: 482.6, rows: 3, cols: 3,
         gutterCut: gutter, gutterSlit: gutter, topOffset: 25, sideTrim: 18,
         horizontalPlacement: 'center', rotation: 0, backRotation: 0, rotationPattern: 'same',
-        duplex, flipEdge, marks: true, duploRegMark: true, finishingSide };
+        duplex, flipEdge, marks: true, duploRegMark: false, finishingSide };
       const render = async extra => (await PDFDocument.load(await buildJobPdf(artwork, duplex ? artwork : null, { ...settings, ...extra }))).getPages();
       const off = await render({ barcodeFile: null });
       const on = await render({ barcodeFile });
@@ -44,10 +44,41 @@ test('barcode on hides exactly the top-right corner on barcode sides; off restor
         assert.deepEqual(lines(on[i]), onThisSide ? baseline.filter((_, n) => n !== 6 && n !== 7) : baseline);
         assert.deepEqual(lines(restored[i]), baseline);
         assert.deepEqual(lines(noMarks[i]), []);
-        // The registration L's two filled rectangles stay present on the finishing side.
         const fills = text => (text.match(/\nf\n/g) || []).length;
-        assert.equal(fills(content(off[i])), onThisSide ? 2 : 0);
-        assert.equal(fills(content(on[i])), onThisSide ? 3 : 0); // + white barcode knockout
+        assert.equal(fills(content(off[i])), 0);
+        assert.equal(fills(content(on[i])), onThisSide ? 1 : 0); // White barcode knockout.
       }
     }
+});
+
+test('Duplo registration on hides the top-right corner only on finishing sides; off restores it', async () => {
+  const mm = 72 / 25.4;
+  const source = await PDFDocument.create();
+  const page = source.addPage([96 * mm, 58 * mm]);
+  page.setTrimBox(3 * mm, 3 * mm, 90 * mm, 52 * mm);
+  page.drawRectangle({ x: 0, y: 0, width: 96 * mm, height: 58 * mm, color: rgb(1, .5, 0) });
+  const artwork = { file: new Blob([await source.save()]), pageIndex: 0,
+    meta: { width: 90, height: 52, top: 3, bottom: 3, left: 3, right: 3 } };
+
+  for (const duplex of [false, true]) for (const finishingSide of ['front', 'back', 'both']) {
+    const settings = { sheetW: 330.2, sheetH: 482.6, rows: 3, cols: 3,
+      gutterCut: 5, gutterSlit: 5, topOffset: 25, sideTrim: 18,
+      horizontalPlacement: 'center', rotation: 0, backRotation: 0, rotationPattern: 'same',
+      duplex, flipEdge: 'long', marks: true, barcodeFile: null, finishingSide };
+    const render = async duploRegMark => (await PDFDocument.load(await buildJobPdf(
+      artwork, duplex ? artwork : null, { ...settings, duploRegMark }))).getPages();
+    const off = await render(false);
+    const on = await render(true);
+    const restored = await render(false);
+
+    for (let i = 0; i < off.length; i++) {
+      const baseline = lines(off[i]);
+      assert.equal(baseline.length, 24);
+      const onThisSide = !duplex || finishingSide === 'both' || finishingSide === (i ? 'back' : 'front');
+      assert.deepEqual(lines(on[i]), onThisSide ? baseline.filter((_, n) => n !== 6 && n !== 7) : baseline);
+      assert.deepEqual(lines(restored[i]), baseline);
+      const fills = text => (text.match(/\nf\n/g) || []).length;
+      assert.equal(fills(content(on[i])), onThisSide ? 2 : 0);
+    }
+  }
 });

@@ -836,7 +836,7 @@ function App() {
             <div className="calculation mark-spec"><span>Position</span><b>Exact TrimBox · 0 mm offset · 0.25 pt</b></div>
           </div>}
         </section>
-        <section><h2>Sheet marks</h2><label className="toggle-row"><span><b>Production trim marks</b><small>Corner, gutter cut and gutter slit marks</small></span><input type="checkbox" checked={marks} onChange={event => setMarks(event.target.checked)}/></label>{barcodeFile && marks && <p className="hint barcode-mark-notice">Barcode on: top-right corner trim marks hidden {duplex ? finishingSide === 'both' ? 'on both sides' : `on the ${finishingSide}` : 'on this sheet'}. Select No barcode to restore them.</p>}</section>
+        <section><h2>Sheet marks</h2><label className="toggle-row"><span><b>Production trim marks</b><small>Corner, gutter cut and gutter slit marks</small></span><input type="checkbox" checked={marks} onChange={event => setMarks(event.target.checked)}/></label>{(barcodeFile || duploRegMark) && marks && <p className="hint barcode-mark-notice">{barcodeFile && duploRegMark ? 'Barcode and registration marks on' : barcodeFile ? 'Barcode on' : 'Registration mark on'}: top-right corner trim marks hidden {duplex ? finishingSide === 'both' ? 'on both sides' : `on the ${finishingSide}` : 'on this sheet'}.</p>}</section>
         <div className="panel-next"><span>Continue to machine finishing?</span><button type="button" onClick={() => changeInspectorTab('duplo')}>Duplo setup →</button></div>
       </div>
       <div className="tab-panel" role="tabpanel" id="panel-duplo" aria-labelledby="tab-duplo" hidden={inspectorTab !== 'duplo'}>

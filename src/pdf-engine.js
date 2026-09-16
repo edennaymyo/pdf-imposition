@@ -93,8 +93,7 @@ function drawProductionMarks(page, geometry, hideTopRight = false) {
   line(x - gap - length, y, x - gap, y); line(x, y - gap - length, x, y - gap);
   line(right + gap, y, right + gap + length, y); line(right, y - gap - length, right, y - gap);
   line(x - gap - length, top, x - gap, top); line(x, top + gap, x, top + gap + length);
-  // Keep the barcode corner clear even when these marks do not intersect the barcode.
-  // This is a scanner-clearance rule, not an artwork-collision rule.
+  // Keep the top-right finishing corner clear for barcode or registration hardware marks.
   if (!hideTopRight) {
     line(right + gap, top, right + gap + length, top); line(right, top + gap, right, top + gap + length);
   }
@@ -384,16 +383,18 @@ export async function buildJobPdf(front, back, settings) {
     if (settings.trimBoxOutline && settings.trimBoxOutput === 'export') {
       drawTrimBoxOutlines(outputPage, geometry, settings.sheetH, settings.trimBoxColor);
     }
-    const barcodeOnSide = Boolean(settings.barcodeFile) && finishingOnSide(geometry.side, settings);
+    const finishingMarkOnSide = finishingOnSide(geometry.side, settings);
+    const barcodeOnSide = Boolean(settings.barcodeFile) && finishingMarkOnSide;
+    const registrationMarkOnSide = Boolean(settings.duploRegMark) && finishingMarkOnSide;
     if (settings.marks) drawProductionMarks(outputPage, {
       x: geometry.x * POINTS_PER_MM, y: (settings.sheetH - geometry.y - geometry.height) * POINTS_PER_MM,
       itemWidth: geometry.itemW * POINTS_PER_MM, itemHeight: geometry.itemH * POINTS_PER_MM,
       layoutWidth: geometry.width * POINTS_PER_MM, layoutHeight: geometry.height * POINTS_PER_MM,
       cols: settings.cols, rows: settings.rows,
       gutterCut: settings.gutterCut * POINTS_PER_MM, gutterSlit: settings.gutterSlit * POINTS_PER_MM,
-    }, barcodeOnSide);
-    if (finishingOnSide(geometry.side, settings)) {
-      if (settings.duploRegMark) drawDuploRegistrationMark(outputPage);
+    }, barcodeOnSide || registrationMarkOnSide);
+    if (finishingMarkOnSide) {
+      if (registrationMarkOnSide) drawDuploRegistrationMark(outputPage);
       if (settings.barcodeFile) await drawJobBarcode(output, outputPage, settings.barcodeFile);
     }
   }
