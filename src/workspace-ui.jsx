@@ -95,7 +95,7 @@ export function ExportDialog({ duplex, side, onSideChange, onClose, onDownload, 
       <p className="section-intro">{previewGuide ? 'The TrimBox outline is a preview guide and will not be included in the PDF.' : 'The PDF uses the same output shown in your proof.'}</p>
       {duplex && <label className="select"><span>Include in export</span><select autoFocus aria-label="Export pages" value={side} onChange={event => onSideChange(event.target.value)}><option value="both">Front + Back · 2-page PDF</option><option value="front">Front only</option><option value="back">Back only</option></select></label>}
       <div className="export-recap"><span>Sheet<strong>{sheetLabel}</strong></span><span>Items<strong>{total} up{duplex ? ' / side' : ''}</strong></span><span>PDF order<strong>{!duplex || side === 'front' ? 'Front' : side === 'back' ? 'Back' : '1. Front → 2. Back'}</strong></span></div>
-      {duplex && <p className="hint">Print a test sheet at 100%. Match the printer’s duplex setting to Sheet turn.</p>}
+      {duplex && <p className="hint">Print a test sheet at 100%. Use Long-edge duplex printing.</p>}
       {!ready && <p className="error" role="alert">{issue || 'Wait for the updated output proof.'}</p>}
       <div className="dialog-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button type="button" className="primary-action" disabled={!ready} onClick={onDownload}><Download size={17}/> Download PDF</button></div>
     </div>

@@ -156,7 +156,7 @@ function App() {
   const [backFile, setBackFile] = useState(null);
   const [backSelectedPage, setBackSelectedPage] = useState(1);
   const [backRotation, setBackRotation] = useState(0);
-  const [flipEdge, setFlipEdge] = useState('long');
+  const flipEdge = 'long';
   const [finishingSide, setFinishingSide] = useState('front');
   const [proofView, setProofView] = useState('both');
   const [exportSide, setExportSide] = useState('both');
@@ -493,7 +493,7 @@ function App() {
     setTrimBoxOutline(Boolean(preset.trimBoxOutline)); setTrimBoxColor(preset.trimBoxColor || '#ff00ff'); setTrimBoxOutput(preset.trimBoxOutput || 'preview');
     setDuplex(Boolean(preset.duplex)); setBackInput(preset.backInput || 'same');
     setSelectedPage(preset.frontPage ?? 0); setBackSelectedPage(preset.backPage ?? 1);
-    setBackRotation(preset.backRotation ?? 0); setFlipEdge(preset.flipEdge || 'long'); setFinishingSide(preset.finishingSide || 'front');
+    setBackRotation(preset.backRotation ?? 0); setFinishingSide(preset.finishingSide || 'front');
     setPresetName(preset.name);
     await setBarcodeFromEntry(preset.barcodeName || '');
   };
@@ -519,7 +519,7 @@ function App() {
   const newJob = () => {
     clearFront(); setBackFile(null); setBackInput('same'); setBackSelectedPage(1); setInspection(null);
     setRotation(0); setBackRotation(0); setRotationPattern('same');
-    setDuplex(false); setProofView('both'); setExportSide('both'); setFlipEdge('long'); setFinishingSide('front');
+    setDuplex(false); setProofView('both'); setExportSide('both'); setFinishingSide('front');
     setPaperPreset('13x19'); setSheetW(330.2); setSheetH(482.6); setCols(1); setRows(1);
     setGutterCut(5); setGutterSlit(5); setTopOffset(10); setHorizontalPlacement('center'); setSideTrim(10);
     setMarks(true); setDuploRegMark(true); setTrimBoxOutline(false); setTrimBoxColor('#ff00ff'); setTrimBoxOutput('preview'); setBarcodeFile(null); setBarcodeName('');
@@ -823,7 +823,7 @@ function App() {
         <div className="panel-heading"><span className="eyebrow">02 / ARRANGE</span><h1>Build the sheet</h1></div>
         <section><h2>Sheet & repeat</h2><label className="select"><span>Paper size</span><select aria-label="Sheet preset" value={paperPreset} onChange={event => selectPaper(event.target.value)}><option value="13x19">13 × 19 in</option><option value="12.4x18.4">12.4 × 18.4 in</option><option value="custom">Custom size</option></select></label>{paperPreset === 'custom' && <div className="two"><NumberField label="Sheet width" value={sheetW} setValue={setSheetW} min={MIN_SHEET_MM} max={MAX_SHEET_WIDTH_MM} unit={unit} factor={factor}/><NumberField label="Sheet length" value={sheetH} setValue={setSheetH} min={MIN_SHEET_MM} max={MAX_SHEET_HEIGHT_MM} unit={unit} factor={factor}/></div>}<div className="two"><NumberField label="Columns" value={cols} setValue={setCols} min={1} max={25} unit=""/><NumberField label="Rows" value={rows} setValue={setRows} min={1} max={25} unit=""/></div><div className="layout-total"><span>Total up</span><b>{cols * rows}</b></div></section>
         <section><PatternPicker value={rotationPattern} onChange={setRotationPattern} duplex={duplex}/></section>
-        {duplex && <section><h2>Two-sided printing</h2><SegmentedChoice label="Sheet turn" name="Sheet flip" value={flipEdge} options={[{ value: 'long', label: 'Long edge' }, { value: 'short', label: 'Short edge' }]} onChange={setFlipEdge}/><p className="section-intro">{flipEdge === 'long' ? 'Turn left / right.' : 'Turn top / bottom.'} Turns the sheet, not the artwork. Match your printer’s duplex setting.</p><details className="inline-help"><summary>Alignment & test-print guidance</summary><p className="hint">Print one test sheet at 100% before production. Manual refeeding depends on the printer. Back cut positions follow Front; artwork text is never mirrored.</p>{plan?.sides[1] && <div className="calculation"><span>Back placement · automatic</span><b>Top {display(plan.sides[1].y)} · Right {display(sheetW - plan.sides[1].x - layoutW)}</b></div>}</details></section>}
+        {duplex && <section><details className="inline-help duplex-guidance"><summary>Duplex alignment · Long edge</summary><p className="hint">The sheet always turns left / right. Print one test sheet at 100% before production. Back cut positions follow Front; artwork text is never mirrored.</p>{plan?.sides[1] && <div className="calculation"><span>Back placement · automatic</span><b>Top {display(plan.sides[1].y)} · Right {display(sheetW - plan.sides[1].x - layoutW)}</b></div>}</details></section>}
         <details className="advanced output-details"><summary>Output size & bleed</summary><div className="details-body"><div className="summary-grid"><span>Finished item<b>{display(itemW)} × {display(itemH)}</b></span><span>Layout<b>{display(layoutW)} × {display(layoutH)}</b></span><span>Outer bleed<b>T {display(appliedOuterBleed.top)} · B {display(appliedOuterBleed.bottom)} · L {display(appliedOuterBleed.left)} · R {display(appliedOuterBleed.right)}</b></span></div>{duplex && plan?.sides[1] && <p className="hint">Back outer bleed: {Object.entries(plan.sides[1].outer).map(([side, value]) => `${side} ${display(value)}`).join(' · ')}</p>}</div></details>
         {(outerBleedShortfall || plan?.sides.some(side => !side.marksOnSheet)) && <div className="layout-advisory">{outerBleedShortfall && <p>Some source bleed is below 3 mm. Available bleed is used without stretching.</p>}{plan?.sides.some(side => !side.marksOnSheet) && <p>Some trim marks fall outside the sheet. Increase margins for full marks.</p>}</div>}
       </div>
