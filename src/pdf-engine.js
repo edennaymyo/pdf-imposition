@@ -220,6 +220,35 @@ export function classifyPlacement(slotWidth, slotHeight, meta, rotation = 0) {
   };
 }
 
+// Build an isolated, TrimBox-only proof for one slot. This intentionally does not
+// crop the imposed sheet preview, avoiding adjacent artwork at fractional UI scales.
+export async function buildPlacementPreviewPdf(input, slotWidth, slotHeight, rotation = 0) {
+  if (!input?.file || !input?.meta || !Number.isInteger(input.pageIndex)) throw new Error('Choose artwork for this block.');
+  const fit = classifyPlacement(slotWidth, slotHeight, input.meta, rotation);
+  if (fit.status === 'oversized') throw new Error('This artwork is larger than the confirmed slot.');
+  const source = await PDFDocument.load(await input.file.arrayBuffer(), { updateMetadata: false });
+  const sourcePage = source.getPage(input.pageIndex);
+  const trim = sourcePage.getTrimBox();
+  const output = await PDFDocument.create();
+  const page = output.addPage([slotWidth * POINTS_PER_MM, slotHeight * POINTS_PER_MM]);
+  const embedded = await output.embedPage(sourcePage, {
+    left: trim.x,
+    bottom: trim.y,
+    right: trim.x + trim.width,
+    top: trim.y + trim.height,
+  });
+  drawEmbeddedArtwork(
+    page,
+    embedded,
+    trim,
+    { top: 0, bottom: 0, left: 0, right: 0 },
+    rotation,
+    fit.offsetX * POINTS_PER_MM,
+    (slotHeight - fit.offsetY - fit.height) * POINTS_PER_MM,
+  );
+  return output.save({ useObjectStreams: false });
+}
+
 // All plan coordinates are millimetres measured from the top-left of a PDF sheet.
 // Reflect positions, never glyphs/images. Each back cell retains its front partner's pattern.
 export function planJob(front, back, settings) {

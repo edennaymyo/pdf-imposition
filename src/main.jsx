@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Download, FileUp, FolderOpen, GripHorizontal, Minus, Plus, RefreshCcw, RotateCw, Save, Settings2, Trash2, X, ZoomIn } from 'lucide-react';
 import { PDFDocument } from 'pdf-lib';
-import { buildJobPdf, planJob, calculateOuterBleed, classifyPlacement, inspectBarcode, extractOutputSide, finishedSize } from './pdf-engine.js';
+import { buildJobPdf, buildPlacementPreviewPdf, planJob, calculateOuterBleed, classifyPlacement, inspectBarcode, extractOutputSide, finishedSize } from './pdf-engine.js';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import pdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
 import './styles.css';
@@ -196,6 +196,7 @@ function App() {
   const [placementNotice, setPlacementNotice] = useState('');
   const [draggedOverCell, setDraggedOverCell] = useState(null);
   const [previewCell, setPreviewCell] = useState(null);
+  const [blockPreview, setBlockPreview] = useState({ image: '', error: '' });
   const [editorOffset, setEditorOffset] = useState({ x: 0, y: 0 });
   const [editorDragging, setEditorDragging] = useState(false);
   const editorDrag = useRef(null);
@@ -256,7 +257,13 @@ function App() {
   const selectedBlockRotation = selectedPlacement?.rotation ?? selectedMasterRotation;
   const previewGeometry = previewCell ? plan?.sides.find(side => side.side === previewCell.side) : null;
   const previewCellGeometry = previewGeometry?.cells.find(cell => cell.slotIndex === previewCell?.cellIndex);
-  const previewImage = previewCell ? proofImages[previewCell.side === 'front' ? 0 : 1] : null;
+  const previewPlacementMap = previewCell?.side === 'back' ? mixedBackPlacements : mixedPlacements;
+  const previewPlacement = previewCell ? previewPlacementMap[previewCell.cellIndex] || null : null;
+  const previewMasterFile = previewCell?.side === 'back' ? effectiveBackFile : sourceFile;
+  const previewMasterMeta = previewCell?.side === 'back' ? backMeta : meta;
+  const previewFile = previewPlacement?.file || previewMasterFile;
+  const previewMeta = previewPlacement?.meta || previewMasterMeta;
+  const previewPageIndex = previewPlacement?.pageIndex ?? previewMasterMeta?.pageIndex ?? 0;
   const sizesMatch = Boolean(meta && (!duplex || (backSize && Math.abs(itemW - backSize.width) <= 0.01 && Math.abs(itemH - backSize.height) <= 0.01)));
   const issueText = statusError || (barcodeNeedsAttention ? 'Reconnect the selected barcode file.' : sourceFile && meta && !masterConfirmed ? 'Confirm the finished item size before arranging the sheet.' : sourceFile && !processing && !geometricFit ? 'This layout does not fit. Review sheet size and repeat count.' : '');
   const issueTab = barcodeNeedsAttention ? 'duplo' : !meta || !masterConfirmed || (duplex && !sizesMatch) || inspectionError ? 'artwork' : 'layout';
@@ -308,6 +315,31 @@ function App() {
     document.addEventListener('keydown', closeOnEscape);
     return () => document.removeEventListener('keydown', closeOnEscape);
   }, [sizeConfirmOpen, previewCell]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!previewCell || !previewGeometry || !previewCellGeometry || !previewFile || !previewMeta) {
+      setBlockPreview({ image: '', error: '' });
+      return () => { cancelled = true; };
+    }
+    setBlockPreview({ image: '', error: '' });
+    const renderBlock = async () => {
+      try {
+        const bytes = await buildPlacementPreviewPdf(
+          { file: previewFile, meta: previewMeta, pageIndex: previewPageIndex },
+          previewGeometry.itemW,
+          previewGeometry.itemH,
+          previewCellGeometry.rotation,
+        );
+        const [image] = await renderOutputPdf(bytes);
+        if (!cancelled) setBlockPreview({ image, error: '' });
+      } catch (failure) {
+        if (!cancelled) setBlockPreview({ image: '', error: `Block preview failed: ${failure.message}` });
+      }
+    };
+    renderBlock();
+    return () => { cancelled = true; };
+  }, [previewCell, previewGeometry, previewCellGeometry, previewFile, previewMeta, previewPageIndex]);
 
   useEffect(() => {
     setEditorOffset({ x: 0, y: 0 });
@@ -750,7 +782,7 @@ function App() {
         <section className="block-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="block-preview-title">
           <header><div><b id="block-preview-title">{previewCell.side === 'back' ? 'Back' : 'Front'} · Block {previewCell.cellIndex + 1}</b><span>Preview only · artwork size, ratio and export stay unchanged</span></div><button type="button" aria-label="Close block preview" onClick={() => setPreviewCell(null)}><X size={18}/></button></header>
           <div className="block-preview-crop" style={{ aspectRatio: previewGeometry.itemW / previewGeometry.itemH }}>
-            {previewImage ? <img src={previewImage} alt={`${previewCell.side === 'back' ? 'Back' : 'Front'} block ${previewCell.cellIndex + 1} enlarged preview`} style={{ width: `${sheetW / previewGeometry.itemW * 100}%`, left: `${-previewCellGeometry.x / previewGeometry.itemW * 100}%`, top: `${-previewCellGeometry.y / previewGeometry.itemH * 100}%` }}/> : <span>Updating preview…</span>}
+            {blockPreview.image ? <img src={blockPreview.image} alt={`${previewCell.side === 'back' ? 'Back' : 'Front'} block ${previewCell.cellIndex + 1} isolated preview`}/> : <span>{blockPreview.error || 'Rendering selected block…'}</span>}
           </div>
           <p>Inspection view only. The PDF artwork remains at its original 100% size and original aspect ratio.</p>
         </section>
