@@ -273,6 +273,7 @@ function App() {
   const [selectedCell, setSelectedCell] = useState(null);
   const [selectedPlacementSide, setSelectedPlacementSide] = useState('front');
   const [placementNotice, setPlacementNotice] = useState('');
+  const [layoutNotice, setLayoutNotice] = useState('');
   const [draggedOverCell, setDraggedOverCell] = useState(null);
   const [previewCell, setPreviewCell] = useState(null);
   const [blockPreview, setBlockPreview] = useState({ image: '', error: '' });
@@ -407,6 +408,12 @@ function App() {
     document.addEventListener('keydown', closeOnEscape);
     return () => document.removeEventListener('keydown', closeOnEscape);
   }, [sizeConfirmOpen, previewCell]);
+
+  useEffect(() => {
+    if (!layoutNotice) return undefined;
+    const timer = window.setTimeout(() => setLayoutNotice(''), 2800);
+    return () => window.clearTimeout(timer);
+  }, [layoutNotice]);
 
   useEffect(() => {
     let cancelled = false;
@@ -619,6 +626,17 @@ function App() {
     if (preset === '12.4x18.4') { setSheetW(315); setSheetH(467.4); }
   };
 
+  const changeRotationPattern = pattern => {
+    setRotationPattern(pattern);
+    if (pattern === 'same') {
+      setLayoutNotice('');
+      return;
+    }
+    setGutterCut(0);
+    setGutterSlit(0);
+    setLayoutNotice('Gutter Cut and Gutter Slit reset to 0 for this grid pattern.');
+  };
+
   const clearFront = () => {
     setSourceFile(null); setSelectedPage(0); replaceProofImages(null); setError(''); setMasterConfirmed(false);
     setFillMode('repeat'); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); setPlacementNotice('');
@@ -630,7 +648,7 @@ function App() {
     setPaperPreset('13x19'); setSheetW(330.2); setSheetH(482.6); setCols(1); setRows(1);
     setGutterCut(DEFAULT_GUTTER_MM); setGutterSlit(DEFAULT_GUTTER_MM); setTopOffset(10); setHorizontalPlacement('center'); setSideTrim(10);
     setMarks(true); setDuploRegMark(true); setTrimBoxOutline(false); setTrimBoxColor('#ff00ff'); setTrimBoxOutput('preview'); setBarcodeFile(null); setBarcodeName('');
-    setMasterConfirmed(false); setFillMode('repeat'); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); setPlacementNotice('');
+    setMasterConfirmed(false); setFillMode('repeat'); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); setPlacementNotice(''); setLayoutNotice('');
     setPresetName(''); setSelectedPresetId(''); setPresetsOpen(false); setBarcodeOpen(false);
     setEditingSide('front'); changeInspectorTab('artwork'); setExportOpen(false);
   };
@@ -842,14 +860,16 @@ function App() {
       </div>
       <div className="rail-spacer"/>
       <button className="rail-action rail-export" type="button" title="Export imposed PDF" disabled={!exportReady} onClick={() => setExportOpen(true)}><Download size={19}/><span>{processing ? 'Working' : 'Export'}</span></button>
-      <div className="rail-unit" aria-label="Measurement unit"><button className={unit === 'mm' ? 'selected' : ''} onClick={() => setUnit('mm')}>mm</button><button className={unit === 'in' ? 'selected' : ''} onClick={() => setUnit('in')}>in</button></div>
     </nav>
 
     <section className="work redesigned-work">
       <div className="proof-toolbar">
         <button className="start-new-job" type="button" onClick={requestNewJob}><RefreshCcw size={14}/><span>Start new job</span></button>
         {meta && masterConfirmed && <div className="confirmed-size-bar" aria-label={`Confirmed finished size ${display(itemW)} by ${display(itemH)}`}><span>Finished size</span><strong>{display(itemW)} × {display(itemH)}</strong><button type="button" onClick={() => setSizeConfirmOpen(true)}>Change</button></div>}
-        {duplex && <div className="view-switch" aria-label="Proof view">{['front', 'back', 'both'].map(view => <button key={view} aria-pressed={proofView === view} onClick={() => setProofView(view)}>{view === 'both' ? 'Both' : view === 'front' ? 'Front' : 'Back'}</button>)}</div>}
+        <div className="proof-toolbar-actions">
+          <div className="toolbar-unit" aria-label="Measurement unit"><button type="button" aria-pressed={unit === 'mm'} onClick={() => setUnit('mm')}>mm</button><button type="button" aria-pressed={unit === 'in'} onClick={() => setUnit('in')}>in</button></div>
+          {duplex && <div className="view-switch" aria-label="Proof view">{['front', 'back', 'both'].map(view => <button key={view} aria-pressed={proofView === view} onClick={() => setProofView(view)}>{view === 'both' ? 'Both' : view === 'front' ? 'Front' : 'Back'}</button>)}</div>}
+        </div>
       </div>
       <div className={`canvas-wrap duplex-canvas ${shownSides.length === 2 ? 'two-proofs' : ''}`} aria-busy={processing}>
         {shownSides.map((side, index) => {
@@ -939,7 +959,7 @@ function App() {
       <div className="tab-panel" role="tabpanel" id="panel-layout" aria-labelledby="tab-layout" hidden={inspectorTab !== 'layout'}>
         <div className="panel-heading"><span className="eyebrow">02 / ARRANGE</span><h1>Build the sheet</h1></div>
         <section><h2>Sheet & repeat</h2><label className="select"><span>Paper size</span><select aria-label="Sheet preset" value={paperPreset} onChange={event => selectPaper(event.target.value)}><option value="13x19">13 × 19 in</option><option value="12.4x18.4">12.4 × 18.4 in</option><option value="custom">Custom size</option></select></label>{paperPreset === 'custom' && <div className="two"><NumberField label="Sheet width" value={sheetW} setValue={setSheetW} min={MIN_SHEET_MM} max={MAX_SHEET_WIDTH_MM} unit={unit} factor={factor}/><NumberField label="Sheet length" value={sheetH} setValue={setSheetH} min={MIN_SHEET_MM} max={MAX_SHEET_HEIGHT_MM} unit={unit} factor={factor}/></div>}<div className="two"><NumberField label="Columns" value={cols} setValue={setCols} min={1} max={25} unit=""/><NumberField label="Rows" value={rows} setValue={setRows} min={1} max={25} unit=""/></div><div className="layout-total"><span>Total up</span><b>{cols * rows}</b></div></section>
-        <section><PatternPicker value={rotationPattern} onChange={setRotationPattern} duplex={duplex}/></section>
+        <section><PatternPicker value={rotationPattern} onChange={changeRotationPattern} duplex={duplex}/>{layoutNotice && <p className="layout-pattern-notice" role="status">{layoutNotice}</p>}</section>
         {duplex && <section><details className="inline-help duplex-guidance"><summary>Duplex alignment · Long edge</summary><p className="hint">The sheet always turns left / right. Print one test sheet at 100% before production. Back cut positions follow Front; artwork text is never mirrored.</p>{plan?.sides[1] && <div className="calculation"><span>Back placement · automatic</span><b>Top {display(plan.sides[1].y)} · Right {display(sheetW - plan.sides[1].x - layoutW)}</b></div>}</details></section>}
         <details className="advanced output-details"><summary>Output size & bleed</summary><div className="details-body"><div className="summary-grid"><span>Finished item<b>{display(itemW)} × {display(itemH)}</b></span><span>Layout<b>{display(layoutW)} × {display(layoutH)}</b></span><span>Outer bleed<b>T {display(appliedOuterBleed.top)} · B {display(appliedOuterBleed.bottom)} · L {display(appliedOuterBleed.left)} · R {display(appliedOuterBleed.right)}</b></span></div>{duplex && plan?.sides[1] && <p className="hint">Back outer bleed: {Object.entries(plan.sides[1].outer).map(([side, value]) => `${side} ${display(value)}`).join(' · ')}</p>}</div></details>
         {(outerBleedShortfall || plan?.sides.some(side => !side.marksOnSheet)) && <div className="layout-advisory">{outerBleedShortfall && <p>Some source bleed is below 3 mm. Available bleed is used without stretching.</p>}{plan?.sides.some(side => !side.marksOnSheet) && <p>Some trim marks fall outside the sheet. Increase margins for full marks.</p>}</div>}
