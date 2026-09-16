@@ -4,8 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - feature/windows-desktop
-      - feature/front-back-duplex
+      - main
 
 jobs:
   build-windows:

@@ -2,23 +2,24 @@
 
 The desktop app wraps the offline Vite interface in Electron. Node.js integration stays disabled; context isolation and Chromium sandboxing stay enabled.
 
-## Version 0.2.0
+## Version 0.3.1
 
-- Single-sided and Front/Back PDF preview and export.
-- Independent artwork rotation/reset and repeated grid patterns.
-- Compact Artwork, Layout, and Duplo controls; saved presets.
+- Single-sided and Front/Back PDF preview and export, including mixed artwork per block.
+- Independent page selection and rotation with isolated block inspection previews.
+- Compact Artwork, Layout, Marks, and Duplo controls; saved presets.
+- PDF composition runs in a worker and screen proofs use lighter asynchronous rendering for smoother operation on modest Windows PCs.
 - Barcode overlap is allowed without warnings or approval. White knockout and top-layer placement stay enabled.
 - Top-right corner trim marks are hidden on barcode sides and restored when barcode is off. Registration and gutter marks remain unchanged.
 
 ## Build the Windows installer
 
-GitHub Actions builds on a Windows runner when `feature/front-back-duplex` or `feature/windows-desktop` is pushed. It can also be started with **Actions → Windows Desktop Build → Run workflow**, selecting the branch that contains the intended changes.
+GitHub Actions builds on a Windows runner when `main` is pushed. It can also be started with **Actions → Windows Desktop Build → Run workflow**, selecting `main`.
 
 The workflow runs tests, builds the app, and packages an x64 NSIS installer. Download and extract the `repeat-pdf-imposition-windows` artifact:
 
 ```text
-Repeat-PDF-Imposition-Setup-0.2.0.exe
-Repeat-PDF-Imposition-Setup-0.2.0.exe.sha256
+Repeat-PDF-Imposition-Setup-0.3.1.exe
+Repeat-PDF-Imposition-Setup-0.3.1.exe.sha256
 ```
 
 Build directly on Windows with Node.js 22 installed:
