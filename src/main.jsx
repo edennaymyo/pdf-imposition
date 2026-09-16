@@ -12,6 +12,7 @@ import './workspace-ui.css';
 
 const MM_PER_POINT = 25.4 / 72;
 const PREVIEW_SCALE = 1;
+const DEFAULT_GUTTER_MM = 0;
 const MIN_SHEET_MM = 210;
 const MAX_SHEET_WIDTH_MM = 330.2;
 const MAX_SHEET_HEIGHT_MM = 482.6;
@@ -245,8 +246,8 @@ function App() {
   const [error, setError] = useState('');
   const [sheetW, setSheetW] = useState(330.2);
   const [sheetH, setSheetH] = useState(482.6);
-  const [gutterCut, setGutterCut] = useState(5);
-  const [gutterSlit, setGutterSlit] = useState(5);
+  const [gutterCut, setGutterCut] = useState(DEFAULT_GUTTER_MM);
+  const [gutterSlit, setGutterSlit] = useState(DEFAULT_GUTTER_MM);
   const [topOffset, setTopOffset] = useState(10);
   const [horizontalPlacement, setHorizontalPlacement] = useState('center');
   const [sideTrim, setSideTrim] = useState(10);
@@ -627,7 +628,7 @@ function App() {
     setRotation(0); setBackRotation(0); setRotationPattern('same');
     setDuplex(false); setProofView('both'); setExportSide('both'); setFinishingSide('front');
     setPaperPreset('13x19'); setSheetW(330.2); setSheetH(482.6); setCols(1); setRows(1);
-    setGutterCut(5); setGutterSlit(5); setTopOffset(10); setHorizontalPlacement('center'); setSideTrim(10);
+    setGutterCut(DEFAULT_GUTTER_MM); setGutterSlit(DEFAULT_GUTTER_MM); setTopOffset(10); setHorizontalPlacement('center'); setSideTrim(10);
     setMarks(true); setDuploRegMark(true); setTrimBoxOutline(false); setTrimBoxColor('#ff00ff'); setTrimBoxOutput('preview'); setBarcodeFile(null); setBarcodeName('');
     setMasterConfirmed(false); setFillMode('repeat'); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); setPlacementNotice('');
     setPresetName(''); setSelectedPresetId(''); setPresetsOpen(false); setBarcodeOpen(false);
