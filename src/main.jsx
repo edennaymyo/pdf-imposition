@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Download, FileUp, FolderOpen, GripHorizontal, Minus, Plus, RefreshCcw, RotateCw, Save, Settings2, Trash2, X, ZoomIn } from 'lucide-react';
+import { AlertTriangle, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, CheckCircle2, ChevronLeft, ChevronRight, Download, FileUp, FolderOpen, GripHorizontal, Minus, Plus, RefreshCcw, RotateCw, Save, Settings2, Trash2, X, ZoomIn } from 'lucide-react';
 import { PDFDocument } from 'pdf-lib';
 import { buildJobPdf, buildPlacementPreviewPdf, planJob, calculateOuterBleed, classifyPlacement, inspectBarcode, extractOutputSide, finishedSize } from './pdf-engine.js';
 import pdfJsWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
@@ -260,6 +260,7 @@ function App() {
   const [barcodeEntries, setBarcodeEntries] = useState([]);
   const [barcodeFile, setBarcodeFile] = useState(null);
   const [barcodeName, setBarcodeName] = useState('');
+  const [barcodeEnabled, setBarcodeEnabled] = useState(false);
   const [barcodeFolderStatus, setBarcodeFolderStatus] = useState('Choose the barcode PDF folder once');
   const [presetName, setPresetName] = useState('');
   const [savedPresets, setSavedPresets] = useState(loadStoredPresets);
@@ -273,6 +274,7 @@ function App() {
   const [selectedCell, setSelectedCell] = useState(null);
   const [selectedPlacementSide, setSelectedPlacementSide] = useState('front');
   const [placementNotice, setPlacementNotice] = useState('');
+  const [placementUndo, setPlacementUndo] = useState(null);
   const [layoutNotice, setLayoutNotice] = useState('');
   const [draggedOverCell, setDraggedOverCell] = useState(null);
   const [previewCell, setPreviewCell] = useState(null);
@@ -291,6 +293,7 @@ function App() {
   const display = value => unit === 'in' ? `${(value / 25.4).toFixed(3)} in` : `${Number(value).toFixed(1)} mm`;
   const displaySheetInches = value => `${Number((value / 25.4).toFixed(3))} in`;
   const effectiveBackFile = backInput === 'same' ? sourceFile : backFile;
+  const activeBarcodeFile = barcodeEnabled ? barcodeFile : null;
   const inspectionRequest = useMemo(() => ({ sourceFile, selectedPage, duplex, effectiveBackFile, backSelectedPage }),
     [sourceFile, selectedPage, duplex, effectiveBackFile, backSelectedPage]);
   const meta = inspection?.request === inspectionRequest ? inspection.front : null;
@@ -298,10 +301,10 @@ function App() {
   const inspectionError = inspection?.request === inspectionRequest ? inspection.error : '';
   const settings = useMemo(() => ({
     rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset,
-    horizontalPlacement, sideTrim, marks, duploRegMark, trimBoxOutline, trimBoxColor, trimBoxOutput, barcodeFile,
+    horizontalPlacement, sideTrim, marks, duploRegMark, trimBoxOutline, trimBoxColor, trimBoxOutput, barcodeFile: activeBarcodeFile,
     duplex, backRotation, flipEdge, finishingSide, fillMode, mixedPlacements, mixedBackPlacements,
   }), [rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset,
-    horizontalPlacement, sideTrim, marks, duploRegMark, trimBoxOutline, trimBoxColor, trimBoxOutput, barcodeFile, duplex, backRotation, flipEdge, finishingSide,
+    horizontalPlacement, sideTrim, marks, duploRegMark, trimBoxOutline, trimBoxColor, trimBoxOutput, activeBarcodeFile, duplex, backRotation, flipEdge, finishingSide,
     fillMode, mixedPlacements, mixedBackPlacements]);
   const planned = useMemo(() => {
     try { return { plan: planJob(meta, backMeta, settings), error: '' }; }
@@ -318,7 +321,7 @@ function App() {
   const layoutLeft = frontGeometry?.x ?? (sheetW - layoutW) / 2;
   const calculatedSideTrim = sheetW - layoutLeft - layoutW;
   const geometricFit = Boolean(plan?.fits);
-  const canExport = masterConfirmed && geometricFit && (!barcodeName || Boolean(barcodeFile));
+  const canExport = masterConfirmed && geometricFit && (!barcodeEnabled || Boolean(barcodeName && barcodeFile));
   const proofRequest = useMemo(() => ({ inspectionRequest, meta, backMeta, settings }), [inspectionRequest, meta, backMeta, settings]);
   const outputBytes = proof?.request === proofRequest ? proof.bytes : null;
   const proofImages = proof?.images || [];
@@ -326,7 +329,7 @@ function App() {
   const statusError = error || inspectionError || (sourceFile && !processing ? planned.error : '');
   const shownSides = duplex ? (proofView === 'both' ? ['front', 'back'] : [proofView]) : ['front'];
   const exportReady = Boolean(outputBytes && !processing && canExport);
-  const barcodeNeedsAttention = Boolean(barcodeName && !barcodeFile);
+  const barcodeNeedsAttention = Boolean(barcodeEnabled && (!barcodeName || !barcodeFile));
   const sheetLabel = paperPreset === '13x19' ? '13 × 19 in' : paperPreset === '12.4x18.4' ? '12.4 × 18.4 in' : `${display(sheetW)} × ${display(sheetH)}`;
   const backSize = backMeta ? finishedSize(backMeta, backRotation) : null;
   const selectedPlacementMap = selectedPlacementSide === 'back' ? mixedBackPlacements : mixedPlacements;
@@ -334,8 +337,9 @@ function App() {
   const selectedMasterFile = selectedPlacementSide === 'back' ? effectiveBackFile : sourceFile;
   const selectedMasterMeta = selectedPlacementSide === 'back' ? backMeta : meta;
   const selectedMasterRotation = selectedPlacementSide === 'back' ? backRotation : rotation;
-  const selectedBlockFile = selectedPlacement?.file || selectedMasterFile;
-  const selectedBlockMeta = selectedPlacement?.meta || selectedMasterMeta;
+  const selectedBlockEmpty = Boolean(selectedPlacement?.empty);
+  const selectedBlockFile = selectedBlockEmpty ? null : selectedPlacement?.file || selectedMasterFile;
+  const selectedBlockMeta = selectedBlockEmpty ? null : selectedPlacement?.meta || selectedMasterMeta;
   const selectedBlockPage = selectedPlacement?.pageIndex ?? selectedMasterMeta?.pageIndex ?? 0;
   const selectedBlockRotation = selectedPlacement?.rotation ?? selectedMasterRotation;
   const previewGeometry = previewCell ? plan?.sides.find(side => side.side === previewCell.side) : null;
@@ -344,11 +348,11 @@ function App() {
   const previewPlacement = previewCell ? previewPlacementMap[previewCell.cellIndex] || null : null;
   const previewMasterFile = previewCell?.side === 'back' ? effectiveBackFile : sourceFile;
   const previewMasterMeta = previewCell?.side === 'back' ? backMeta : meta;
-  const previewFile = previewPlacement?.file || previewMasterFile;
-  const previewMeta = previewPlacement?.meta || previewMasterMeta;
+  const previewFile = previewPlacement?.empty ? null : previewPlacement?.file || previewMasterFile;
+  const previewMeta = previewPlacement?.empty ? null : previewPlacement?.meta || previewMasterMeta;
   const previewPageIndex = previewPlacement?.pageIndex ?? previewMasterMeta?.pageIndex ?? 0;
   const sizesMatch = Boolean(meta && (!duplex || (backSize && Math.abs(itemW - backSize.width) <= 0.01 && Math.abs(itemH - backSize.height) <= 0.01)));
-  const issueText = statusError || (barcodeNeedsAttention ? 'Reconnect the selected barcode file.' : sourceFile && meta && !masterConfirmed ? 'Confirm the finished item size before arranging the sheet.' : sourceFile && !processing && !geometricFit ? 'This layout does not fit. Review sheet size and repeat count.' : '');
+  const issueText = statusError || (barcodeNeedsAttention ? 'Choose or reconnect a barcode PDF, or turn Job barcode off.' : sourceFile && meta && !masterConfirmed ? 'Confirm the finished item size before arranging the sheet.' : sourceFile && !processing && !geometricFit ? 'This layout does not fit. Review sheet size and repeat count.' : '');
   const issueTab = barcodeNeedsAttention ? 'duplo' : !meta || !masterConfirmed || (duplex && !sizesMatch) || inspectionError ? 'artwork' : 'layout';
   const changeInspectorTab = tab => { setInspectorTab(tab); inspectorScroll.current?.scrollTo({ top: 0 }); };
   const reviewIssue = () => {
@@ -585,7 +589,7 @@ function App() {
       name: cleanName,
       paperPreset, sheetW, sheetH, rotation, rotationPattern, cols, rows, gutterCut, gutterSlit,
       topTrim: topOffset, horizontalPlacement, sideTrim, marks, duploRegMark,
-      trimBoxOutline, trimBoxColor, trimBoxOutput, barcodeName,
+      trimBoxOutline, trimBoxColor, trimBoxOutput, barcodeName, barcodeEnabled,
       duplex, backInput, backRotation, flipEdge, finishingSide,
       frontPage: meta?.pageIndex ?? selectedPage, backPage: backMeta?.pageIndex ?? backSelectedPage,
     };
@@ -608,6 +612,7 @@ function App() {
     setDuplex(Boolean(preset.duplex)); setBackInput(preset.backInput || 'same');
     setSelectedPage(preset.frontPage ?? 0); setBackSelectedPage(preset.backPage ?? 1);
     setBackRotation(preset.backRotation ?? 0); setFinishingSide(preset.finishingSide || 'front');
+    setBarcodeEnabled(Boolean(preset.barcodeEnabled ?? preset.barcodeName));
     setPresetName(preset.name);
     await setBarcodeFromEntry(preset.barcodeName || '');
   };
@@ -639,7 +644,7 @@ function App() {
 
   const clearFront = () => {
     setSourceFile(null); setSelectedPage(0); replaceProofImages(null); setError(''); setMasterConfirmed(false);
-    setFillMode('repeat'); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); setPlacementNotice('');
+    setFillMode('repeat'); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); setPlacementNotice(''); setPlacementUndo(null);
   };
   const newJob = () => {
     clearFront(); setBackFile(null); setBackInput('same'); setBackSelectedPage(1); setInspection(null);
@@ -647,8 +652,8 @@ function App() {
     setDuplex(false); setProofView('both'); setExportSide('both'); setFinishingSide('front');
     setPaperPreset('13x19'); setSheetW(330.2); setSheetH(482.6); setCols(1); setRows(1);
     setGutterCut(DEFAULT_GUTTER_MM); setGutterSlit(DEFAULT_GUTTER_MM); setTopOffset(10); setHorizontalPlacement('center'); setSideTrim(10);
-    setMarks(true); setDuploRegMark(true); setTrimBoxOutline(false); setTrimBoxColor('#ff00ff'); setTrimBoxOutput('preview'); setBarcodeFile(null); setBarcodeName('');
-    setMasterConfirmed(false); setFillMode('repeat'); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); setPlacementNotice(''); setLayoutNotice('');
+    setMarks(true); setDuploRegMark(true); setTrimBoxOutline(false); setTrimBoxColor('#ff00ff'); setTrimBoxOutput('preview'); setBarcodeFile(null); setBarcodeName(''); setBarcodeEnabled(false);
+    setMasterConfirmed(false); setFillMode('repeat'); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); setPlacementNotice(''); setPlacementUndo(null); setLayoutNotice('');
     setPresetName(''); setSelectedPresetId(''); setPresetsOpen(false); setBarcodeOpen(false);
     setEditingSide('front'); changeInspectorTab('artwork'); setExportOpen(false);
   };
@@ -661,7 +666,7 @@ function App() {
     event.target.value = '';
     if (!file) return;
     setSourceFile(file); setSelectedPage(0); setError(''); setMasterConfirmed(false);
-    setFillMode('repeat'); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); setPlacementNotice('');
+    setFillMode('repeat'); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); setPlacementNotice(''); setPlacementUndo(null);
   };
   const updateSidePlacements = (side, updater) => (side === 'back' ? setMixedBackPlacements : setMixedPlacements)(updater);
   const addPlacementFile = async (file, cellIndex = selectedCell, side = selectedPlacementSide) => {
@@ -684,6 +689,7 @@ function App() {
       updateSidePlacements(side, current => ({ ...current, [cellIndex]: {
         file, meta: placementMeta, pageIndex: placementMeta.pageIndex, rotation: fittingRotation,
       } }));
+      setPlacementUndo(null);
       setSelectedCell(cellIndex);
       setSelectedPlacementSide(side);
       setPlacementNotice(fit.status === 'smaller'
@@ -705,6 +711,7 @@ function App() {
     setSelectedCell(cellIndex);
     setSelectedPlacementSide(side);
     setPlacementNotice('');
+    setPlacementUndo(null);
     changeInspectorTab('artwork');
   };
   const startEditorDrag = event => {
@@ -797,6 +804,7 @@ function App() {
       const fit = classifyPlacement(itemW, itemH, placementMeta, selectedBlockRotation);
       if (fit.status === 'oversized') { setPlacementNotice(`PDF page ${pageIndex + 1} is larger than the confirmed slot.`); return; }
       updateSidePlacements(selectedPlacementSide, current => ({ ...current, [selectedCell]: { file: selectedBlockFile, meta: placementMeta, pageIndex: placementMeta.pageIndex, rotation: selectedBlockRotation } }));
+      setPlacementUndo(null);
       setPlacementNotice(fit.status === 'smaller' ? `PDF page ${pageIndex + 1} is smaller and will be centered.` : `${selectedPlacementSide === 'back' ? 'Back' : 'Front'} Block ${selectedCell + 1} now uses Page ${pageIndex + 1}.`);
     } catch (failure) { setPlacementNotice(`PDF page could not be read: ${failure.message}`); }
   };
@@ -805,12 +813,47 @@ function App() {
     const fit = classifyPlacement(itemW, itemH, selectedBlockMeta, nextRotation);
     if (fit.status === 'oversized') { setPlacementNotice('This rotation would make the artwork larger than the confirmed slot.'); return; }
     updateSidePlacements(selectedPlacementSide, current => ({ ...current, [selectedCell]: { file: selectedBlockFile, meta: selectedBlockMeta, pageIndex: selectedBlockPage, rotation: nextRotation } }));
+    setPlacementUndo(null);
     setPlacementNotice(fit.status === 'smaller' ? `Rotated ${nextRotation}°. Smaller artwork remains centered.` : `Rotated ${nextRotation}°.`);
   };
-  const clearPlacement = () => {
+  const useMasterPlacement = () => {
     if (selectedCell === null) return;
+    setPlacementUndo({ side: selectedPlacementSide, placements: { ...selectedPlacementMap } });
     updateSidePlacements(selectedPlacementSide, current => { const next = { ...current }; delete next[selectedCell]; return next; });
     setPlacementNotice(`${selectedPlacementSide === 'back' ? 'Back' : 'Front'} block now uses the master artwork.`);
+  };
+  const emptyPlacement = () => {
+    if (selectedCell === null) return;
+    setPlacementUndo({ side: selectedPlacementSide, placements: { ...selectedPlacementMap } });
+    updateSidePlacements(selectedPlacementSide, current => ({ ...current, [selectedCell]: { empty: true } }));
+    setPlacementNotice(`${selectedPlacementSide === 'back' ? 'Back' : 'Front'} Block ${selectedCell + 1} is blank. Cut positions remain unchanged.`);
+  };
+  const undoPlacementChange = () => {
+    if (!placementUndo) return;
+    (placementUndo.side === 'back' ? setMixedBackPlacements : setMixedPlacements)(placementUndo.placements);
+    setPlacementUndo(null);
+    setPlacementNotice('Block change undone.');
+  };
+  const adjacentPlacement = (side, cellIndex, rowDelta, colDelta) => {
+    const geometry = plan?.sides.find(item => item.side === side);
+    const sourceCell = geometry?.cells.find(cell => cell.slotIndex === cellIndex);
+    if (!sourceCell) return null;
+    return geometry.cells.find(cell => cell.row === sourceCell.row + rowDelta && cell.col === sourceCell.col + colDelta) || null;
+  };
+  const copyPlacementToAdjacent = (rowDelta, colDelta, directionLabel) => {
+    if (selectedCell === null) return;
+    const destination = adjacentPlacement(selectedPlacementSide, selectedCell, rowDelta, colDelta);
+    if (!destination) return;
+    setPlacementUndo({ side: selectedPlacementSide, placements: { ...selectedPlacementMap } });
+    updateSidePlacements(selectedPlacementSide, current => {
+      const next = { ...current };
+      const source = current[selectedCell];
+      if (!source) delete next[destination.slotIndex];
+      else next[destination.slotIndex] = source.empty ? { empty: true } : { ...source };
+      return next;
+    });
+    setSelectedCell(destination.slotIndex);
+    setPlacementNotice(`Copied ${selectedBlockEmpty ? 'blank state' : selectedPlacement ? 'custom artwork' : 'master artwork'} ${directionLabel} to Block ${destination.slotIndex + 1}.`);
   };
   const changeMasterPage = pageIndex => {
     if (!meta) return;
@@ -884,33 +927,41 @@ function App() {
               {proofImages[side === 'front' ? 0 : 1] ? <img className="proof-image" src={proofImages[side === 'front' ? 0 : 1]} alt={`${side === 'front' ? 'Front' : 'Back'} exported PDF proof`}/> : <div className="proof-empty">{processing ? 'Generating output proof…' : statusError || (sourceFile && !geometricFit ? 'Front or Back layout does not fit this sheet' : 'Upload a PDF to generate the exact output proof')}</div>}
               {trimBoxOutline && trimBoxOutput === 'preview' && sideGeometry && <svg className="trimbox-outline-overlay" viewBox={`0 0 ${sheetW} ${sheetH}`} aria-label={`${side === 'front' ? 'Front' : 'Back'} TrimBox preview guide`}>
                 {sideGeometry.cells.map(cell => <rect key={cell.slotIndex} x={cell.x} y={cell.y} width={sideGeometry.itemW} height={sideGeometry.itemH} style={{ stroke: trimBoxColor }}/>)}</svg>}
+              {fillMode === 'repeat' && masterConfirmed && sideGeometry && <div className="repeat-preview-overlay" aria-label={`${side === 'back' ? 'Back' : 'Front'} artwork preview controls`}>{sideGeometry.cells.map(cell => <div key={cell.slotIndex} className="repeat-preview-slot" style={{ left: `${cell.x / sheetW * 100}%`, top: `${cell.y / sheetH * 100}%`, width: `${sideGeometry.itemW / sheetW * 100}%`, height: `${sideGeometry.itemH / sheetH * 100}%` }}><button type="button" className="placement-slot-preview" aria-label={`Preview ${side} block ${cell.slotIndex + 1}`} title="Preview block" onClick={() => setPreviewCell({ side, cellIndex: cell.slotIndex })}><ZoomIn size={15}/></button></div>)}</div>}
               {fillMode === 'mixed' && masterConfirmed && sideGeometry && <div className="placement-overlay" aria-label={`${side === 'back' ? 'Back' : 'Front'} mixed artwork slots`}>{sideGeometry.cells.map(cell => {
                 const sidePlacements = side === 'back' ? mixedBackPlacements : mixedPlacements;
                 const replacement = sidePlacements[cell.slotIndex];
+                const isEmpty = Boolean(replacement?.empty);
                 const cellKey = `${side}-${cell.slotIndex}`;
                 return <div key={cell.slotIndex} className="placement-slot-shell" style={{ left: `${cell.x / sheetW * 100}%`, top: `${cell.y / sheetH * 100}%`, width: `${sideGeometry.itemW / sheetW * 100}%`, height: `${sideGeometry.itemH / sheetH * 100}%` }}>
-                  <button type="button" className={`placement-hotspot ${selectedCell === cell.slotIndex && selectedPlacementSide === side ? 'is-selected' : ''} ${replacement ? 'has-replacement' : ''} ${draggedOverCell === cellKey ? 'is-dragover' : ''}`}
-                  aria-label={`${side === 'back' ? 'Back' : 'Front'} block ${cell.slotIndex + 1}${replacement ? `, ${replacement.file.name}` : ', master artwork'}. Click to edit or drop a PDF to replace.`}
+                  <button type="button" className={`placement-hotspot ${selectedCell === cell.slotIndex && selectedPlacementSide === side ? 'is-selected' : ''} ${replacement && !isEmpty ? 'has-replacement' : ''} ${isEmpty ? 'is-empty' : ''} ${draggedOverCell === cellKey ? 'is-dragover' : ''}`}
+                  aria-label={`${side === 'back' ? 'Back' : 'Front'} block ${cell.slotIndex + 1}${isEmpty ? ', empty' : replacement ? `, ${replacement.file.name}` : ', master artwork'}. Click to edit or drop a PDF to replace.`}
                   onClick={() => selectPlacementCell(cell.slotIndex, side)}
                   onDragEnter={event => { event.preventDefault(); setDraggedOverCell(cellKey); }}
                   onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDraggedOverCell(cellKey); }}
                   onDragLeave={() => setDraggedOverCell(current => current === cellKey ? null : current)}
                   onDrop={event => dropPlacement(event, cell.slotIndex, side)}>
                   <span className="placement-slot-number">{cell.slotIndex + 1}</span>
+                  {isEmpty && <span className="placement-empty-label">Empty</span>}
                   <span className="placement-slot-action"><FileUp size={14}/>{draggedOverCell === cellKey ? 'Drop PDF here' : 'Edit block'}</span>
                   </button>
-                  <button type="button" className="placement-slot-preview" aria-label={`Preview ${side} block ${cell.slotIndex + 1}`} title="Preview block" onClick={() => setPreviewCell({ side, cellIndex: cell.slotIndex })}><ZoomIn size={15}/></button>
+                  {!isEmpty && <button type="button" className="placement-slot-preview" aria-label={`Preview ${side} block ${cell.slotIndex + 1}`} title="Preview block" onClick={() => setPreviewCell({ side, cellIndex: cell.slotIndex })}><ZoomIn size={15}/></button>}
                 </div>;
               })}</div>}
             </div>
             {selectedPlacementSide === side && fillMode === 'mixed' && masterConfirmed && selectedGeometryCell && <div ref={editorToolbar} className={`placement-context-toolbar ${toolbarBelow ? 'is-below' : ''} ${editorDragging ? 'is-dragging' : ''}`}
               style={{ left: '50%', top: `${(toolbarBelow ? selectedGeometryCell.y + sideGeometry.itemH : selectedGeometryCell.y) / sheetH * 100}%`, '--editor-drag-x': `${editorOffset.x}px`, '--editor-drag-y': `${editorOffset.y}px` }} role="group" aria-label={`Edit ${side} block ${selectedCell + 1}`}>
-              <div className="placement-context-title" tabIndex={0} aria-label="Move block editor. Drag or use arrow keys. Press Home to reset position." title="Drag to move · double-click to reset position" onPointerDown={startEditorDrag} onPointerMove={moveEditorDrag} onPointerUp={endEditorDrag} onPointerCancel={endEditorDrag} onDoubleClick={() => setEditorOffset({ x: 0, y: 0 })} onKeyDown={moveEditorWithKeyboard}><GripHorizontal className="placement-drag-grip" size={18} aria-hidden="true"/><div><b>{side === 'back' ? 'Back' : 'Front'} · Block {selectedCell + 1}</b><span title={selectedPlacement ? selectedPlacement.file.name : selectedMasterFile?.name}>{selectedPlacement ? selectedPlacement.file.name : selectedMasterFile?.name || 'Master artwork'}</span></div><button type="button" className="context-close" aria-label="Close block editor" onClick={() => setSelectedCell(null)}><X size={15}/></button></div>
-              <div className="placement-primary-controls">
+              <div className="placement-context-title" tabIndex={0} aria-label="Move block editor. Drag or use arrow keys. Press Home to reset position." title="Drag to move · double-click to reset position" onPointerDown={startEditorDrag} onPointerMove={moveEditorDrag} onPointerUp={endEditorDrag} onPointerCancel={endEditorDrag} onDoubleClick={() => setEditorOffset({ x: 0, y: 0 })} onKeyDown={moveEditorWithKeyboard}><GripHorizontal className="placement-drag-grip" size={18} aria-hidden="true"/><div><b>{side === 'back' ? 'Back' : 'Front'} · Block {selectedCell + 1}</b><span title={selectedBlockEmpty ? 'Empty block' : selectedPlacement ? selectedPlacement.file.name : selectedMasterFile?.name}>{selectedBlockEmpty ? 'Empty block · cut position retained' : selectedPlacement ? selectedPlacement.file.name : selectedMasterFile?.name || 'Master artwork'}</span></div><button type="button" className="context-close" aria-label="Close block editor" onClick={() => setSelectedCell(null)}><X size={15}/></button></div>
+              {selectedBlockMeta ? <div className="placement-primary-controls">
                 {selectedBlockMeta && <div className="placement-control-group"><span className="placement-control-caption">Page</span><div className="compact-page-control" aria-label="Block page navigation"><button type="button" aria-label="Previous block page" disabled={selectedBlockPage === 0} onClick={() => updatePlacementPage(selectedBlockPage - 1)}><ChevronLeft size={15}/></button><select aria-label="Block PDF page" value={selectedBlockPage} onChange={event => updatePlacementPage(Number(event.target.value))}>{Array.from({ length: selectedBlockMeta.pages }, (_, pageIndex) => <option key={pageIndex} value={pageIndex}>{pageIndex + 1} / {selectedBlockMeta.pages}</option>)}</select><button type="button" aria-label="Next block page" disabled={selectedBlockPage === selectedBlockMeta.pages - 1} onClick={() => updatePlacementPage(selectedBlockPage + 1)}><ChevronRight size={15}/></button></div></div>}
                 <label className="placement-control-group"><span className="placement-control-caption">Rotation</span><span className="compact-rotation-control"><RotateCw size={14}/><select aria-label="Block rotation" value={selectedBlockRotation} onChange={event => updatePlacementRotation(Number(event.target.value))}>{[0, 90, 180, 270].map(angle => <option key={angle} value={angle} disabled={classifyPlacement(itemW, itemH, selectedBlockMeta, angle).status === 'oversized'}>{angle}°</option>)}</select></span></label>
-              </div>
-              <div className="placement-context-actions"><button type="button" onClick={changePlacementFile}><FileUp size={13}/> Change PDF</button><button type="button" disabled={!selectedPlacement} onClick={clearPlacement}><RefreshCcw size={13}/> Reset</button></div>
+              </div> : <div className="placement-empty-state"><b>Blank block</b><span>No artwork will be printed here. Sheet geometry and cut marks stay unchanged.</span></div>}
+              <div className="placement-copy-tools"><span className="placement-control-caption">Copy this block</span><div className="placement-copy-pad">
+                <button type="button" aria-label="Copy block up" title="Copy up" disabled={!adjacentPlacement(side, selectedCell, -1, 0)} onClick={() => copyPlacementToAdjacent(-1, 0, 'up')}><ArrowUp size={14}/></button>
+                <button type="button" aria-label="Copy block left" title="Copy left" disabled={!adjacentPlacement(side, selectedCell, 0, -1)} onClick={() => copyPlacementToAdjacent(0, -1, 'left')}><ArrowLeft size={14}/></button><span aria-hidden="true"/><button type="button" aria-label="Copy block right" title="Copy right" disabled={!adjacentPlacement(side, selectedCell, 0, 1)} onClick={() => copyPlacementToAdjacent(0, 1, 'right')}><ArrowRight size={14}/></button>
+                <button type="button" aria-label="Copy block down" title="Copy down" disabled={!adjacentPlacement(side, selectedCell, 1, 0)} onClick={() => copyPlacementToAdjacent(1, 0, 'down')}><ArrowDown size={14}/></button>
+              </div></div>
+              <div className="placement-context-actions"><button type="button" onClick={changePlacementFile}><FileUp size={13}/> Change PDF</button><button type="button" disabled={!selectedPlacement} onClick={useMasterPlacement}><RefreshCcw size={13}/> Use master</button><button type="button" className="placement-empty-action" disabled={selectedBlockEmpty} aria-label="Clear block and leave empty" title="Clear block · leave empty" onClick={emptyPlacement}><Trash2 size={14}/></button></div>
             </div>}
           </div></div>
         </figure>;})}
@@ -948,9 +999,9 @@ function App() {
           <ArtworkDirection side="Back" value={backRotation} onChange={angle => { setBackRotation(angle); setMixedBackPlacements({}); }}/>
         </SourceCard>}
         {meta && sizesMatch && duplex && <div className="source-check"><CheckCircle2 size={16}/><span>Finished sizes match<small>{display(itemW)} × {display(itemH)} · no scaling</small></span></div>}
-        {meta && masterConfirmed && sizesMatch && <section className="fill-mode-section"><SegmentedChoice label="Artwork filling" value={fillMode} options={[{ value: 'repeat', label: 'Repeat one artwork' }, { value: 'mixed', label: 'Mixed artworks' }]} onChange={value => { setFillMode(value); setSelectedCell(value === 'mixed' ? 0 : null); setSelectedPlacementSide('front'); setPlacementNotice(''); }}/>
-          {fillMode === 'mixed' && <div className="slot-editor"><input ref={slotUploadInput} className="visually-hidden" aria-label="Choose replacement artwork PDF" type="file" accept="application/pdf" onChange={uploadPlacement}/><div className="slot-editor-heading"><div><b>{selectedCell === null ? 'Select a block on the sheet' : `${selectedPlacementSide === 'back' ? 'Back' : 'Front'} · Block ${selectedCell + 1}`}</b><span>{selectedPlacement ? `${selectedPlacement.file.name} · Page ${selectedPlacement.pageIndex + 1}` : selectedCell === null ? 'Click to edit · drop a PDF to replace' : `Master PDF · Page ${(selectedMasterMeta?.pageIndex ?? 0) + 1}`}</span></div></div>
-            {placementNotice && <p className="placement-notice" role="status">{placementNotice}</p>}
+        {meta && masterConfirmed && sizesMatch && <section className="fill-mode-section"><SegmentedChoice label="Artwork filling" value={fillMode} options={[{ value: 'repeat', label: 'Repeat one artwork' }, { value: 'mixed', label: 'Mixed artworks' }]} onChange={value => { setFillMode(value); setSelectedCell(value === 'mixed' ? 0 : null); setSelectedPlacementSide('front'); setPlacementNotice(''); setPlacementUndo(null); }}/>
+          {fillMode === 'mixed' && <div className="slot-editor"><input ref={slotUploadInput} className="visually-hidden" aria-label="Choose replacement artwork PDF" type="file" accept="application/pdf" onChange={uploadPlacement}/><div className="slot-editor-heading"><div><b>{selectedCell === null ? 'Select a block on the sheet' : `${selectedPlacementSide === 'back' ? 'Back' : 'Front'} · Block ${selectedCell + 1}`}</b><span>{selectedBlockEmpty ? 'Empty · cut position retained' : selectedPlacement ? `${selectedPlacement.file.name} · Page ${selectedPlacement.pageIndex + 1}` : selectedCell === null ? 'Click to edit · drop a PDF to replace' : `Master PDF · Page ${(selectedMasterMeta?.pageIndex ?? 0) + 1}`}</span></div></div>
+            {placementNotice && <div className="placement-notice" role="status"><span>{placementNotice}</span>{placementUndo && <button type="button" onClick={undoPlacementChange}>Undo</button>}</div>}
             <p className="hint">Click a Front or Back block to edit that side. Preview enlarges only the inspection view; artwork size, ratio and export never change.</p>
           </div>}
         </section>}
@@ -973,14 +1024,14 @@ function App() {
             <div className="calculation mark-spec"><span>Position</span><b>Exact TrimBox · 0 mm offset · 0.25 pt</b></div>
           </div>}
         </section>
-        <section><h2>Sheet marks</h2><label className="toggle-row"><span><b>Production trim marks</b><small>Corner, gutter cut and gutter slit marks</small></span><input type="checkbox" checked={marks} onChange={event => setMarks(event.target.checked)}/></label>{(barcodeFile || duploRegMark) && marks && <p className="hint barcode-mark-notice">{barcodeFile && duploRegMark ? 'Barcode and registration marks on' : barcodeFile ? 'Barcode on' : 'Registration mark on'}: top-right corner trim marks hidden {duplex ? finishingSide === 'both' ? 'on both sides' : `on the ${finishingSide}` : 'on this sheet'}.</p>}</section>
+        <section><h2>Sheet marks</h2><label className="toggle-row"><span><b>Production trim marks</b><small>Corner, gutter cut and gutter slit marks</small></span><input type="checkbox" checked={marks} onChange={event => setMarks(event.target.checked)}/></label>{(activeBarcodeFile || duploRegMark) && marks && <p className="hint barcode-mark-notice">{activeBarcodeFile && duploRegMark ? 'Barcode and registration marks on' : activeBarcodeFile ? 'Barcode on' : 'Registration mark on'}: top-right corner trim marks hidden {duplex ? finishingSide === 'both' ? 'on both sides' : `on the ${finishingSide}` : 'on this sheet'}.</p>}</section>
         <div className="panel-next"><span>Continue to machine finishing?</span><button type="button" onClick={() => changeInspectorTab('duplo')}>Duplo setup →</button></div>
       </div>
       <div className="tab-panel" role="tabpanel" id="panel-duplo" aria-labelledby="tab-duplo" hidden={inspectorTab !== 'duplo'}>
         <div className="panel-heading"><span className="eyebrow">04 / FINISH</span><h1>Duplo setup</h1></div>
         <section><h2>Duplo finishing</h2><div className="two"><NumberField label="Lead Trim" value={topOffset} setValue={setTopOffset} max={100} unit={unit} factor={factor}/><NumberField label="Side Trim" value={calculatedSideTrim} setValue={setSideTrim} max={100} unit={unit} factor={factor} disabled={horizontalPlacement === 'center'}/></div><SegmentedChoice label="Horizontal placement" value={horizontalPlacement} options={[{ value: 'center', label: 'Centered' }, { value: 'manual', label: 'Manual Side Trim' }]} onChange={mode => { if (mode === 'manual') setSideTrim(calculatedSideTrim); setHorizontalPlacement(mode); }}/><div className="two"><NumberField label="Gutter Cut" value={gutterCut} setValue={setGutterCut} unit={unit} factor={factor}/><NumberField label="Gutter Slit" value={gutterSlit} setValue={setGutterSlit} unit={unit} factor={factor}/></div><p className="hint">Lead Trim is measured from the sheet top to the first finished cut line. Side Trim is measured from the sheet right edge to the first finished slit line.</p></section>
-        <section className="switches">{duplex && <label className="select"><span>Duplo barcode & registration on</span><select aria-label="Finishing side" value={finishingSide} onChange={event => setFinishingSide(event.target.value)}><option value="front">Front · finishing feed side</option><option value="back">Back · finishing feed side</option><option value="both">Both sides</option></select></label>}<label className="toggle-row"><span>Duplo registration mark</span><input type="checkbox" checked={duploRegMark} onChange={event => setDuploRegMark(event.target.checked)}/></label></section>
-        <details id="barcode-details" className="advanced" open={barcodeOpen} onToggle={event => setBarcodeOpen(event.currentTarget.open)}><summary>Job barcode <span className="details-value">{barcodeName ? barcodeName.replace(/\.pdf$/i, '') : 'None'}</span></summary><div className="details-body"><div className="barcode-actions"><button type="button" className="secondary" onClick={connectBarcodeDirectory}><FolderOpen size={14}/> {barcodeDirectoryHandle ? 'Reconnect folder' : 'Choose barcode folder'}</button><span className="barcode-status">{barcodeFolderStatus}</span></div><label className="session-loader"><input className="barcode-file-input" type="file" accept="application/pdf" multiple webkitdirectory="" onChange={loadBarcodeFilesForSession}/><span>Load folder for this session</span></label><label className="select"><span>Job barcode</span><select aria-label="Job barcode" value={barcodeName} onChange={event => setBarcodeFromEntry(event.target.value)}><option value="">No barcode</option>{barcodeEntries.map(entry => <option key={entry.name} value={entry.name}>{entry.name.replace(/\.pdf$/i, '')}</option>)}</select></label><div className="calculation barcode-spec"><span>Bottom crop · white knockout · top layer</span><b>{display(BARCODE_HEIGHT_MM)} high · top {display(BARCODE_TOP_OFFSET_MM)} · right {display(BARCODE_RIGHT_OFFSET_MM)}</b></div></div></details>
+        <section className="switches">{duplex && <label className="select"><span>Duplo barcode & registration on</span><select aria-label="Finishing side" value={finishingSide} onChange={event => setFinishingSide(event.target.value)}><option value="front">Front · finishing feed side</option><option value="back">Back · finishing feed side</option><option value="both">Both sides</option></select></label>}<label className="toggle-row"><span><b>Duplo registration mark</b><small>{duploRegMark ? 'On · top-right trim mark hidden' : 'Off'}</small></span><input aria-label="Duplo registration mark" type="checkbox" checked={duploRegMark} onChange={event => setDuploRegMark(event.target.checked)}/></label><label className="toggle-row barcode-toggle"><span><b>Job barcode</b><small>{barcodeEnabled ? barcodeName ? `On · ${barcodeName.replace(/\.pdf$/i, '')}` : 'On · choose barcode PDF' : 'Off'}</small></span><input aria-label="Job barcode" type="checkbox" checked={barcodeEnabled} onChange={event => { const enabled = event.target.checked; setBarcodeEnabled(enabled); setBarcodeOpen(enabled); setError(''); }}/></label></section>
+        {barcodeEnabled && <details id="barcode-details" className="advanced" open={barcodeOpen} onToggle={event => setBarcodeOpen(event.currentTarget.open)}><summary>Barcode source <span className="details-value">{barcodeName ? barcodeName.replace(/\.pdf$/i, '') : 'Choose PDF'}</span></summary><div className="details-body"><div className="barcode-actions"><button type="button" className="secondary" onClick={connectBarcodeDirectory}><FolderOpen size={14}/> {barcodeDirectoryHandle ? 'Reconnect folder' : 'Choose barcode folder'}</button><span className="barcode-status">{barcodeFolderStatus}</span></div><label className="session-loader"><input className="barcode-file-input" type="file" accept="application/pdf" multiple webkitdirectory="" onChange={loadBarcodeFilesForSession}/><span>Load folder for this session</span></label><label className="select"><span>Barcode PDF</span><select aria-label="Job barcode PDF" value={barcodeName} onChange={event => setBarcodeFromEntry(event.target.value)}><option value="">Choose barcode PDF</option>{barcodeEntries.map(entry => <option key={entry.name} value={entry.name}>{entry.name.replace(/\.pdf$/i, '')}</option>)}</select></label><div className="calculation barcode-spec"><span>Bottom crop · white knockout · top layer</span><b>{display(BARCODE_HEIGHT_MM)} high · top {display(BARCODE_TOP_OFFSET_MM)} · right {display(BARCODE_RIGHT_OFFSET_MM)}</b></div></div></details>}
         <div className={canExport ? 'summary compact-check' : 'summary warning compact-check'}><span>DC-616 CHECK</span><b>{!sourceFile ? 'Choose artwork to check fit' : barcodeNeedsAttention ? 'Review barcode before export' : canExport ? 'Sheet & layout fit' : 'Review artwork and layout'}</b><small>Lead {display(topOffset)} · Side {display(calculatedSideTrim)} · Cut {display(gutterCut)} · Slit {display(gutterSlit)}</small></div>
       </div>
       </div>

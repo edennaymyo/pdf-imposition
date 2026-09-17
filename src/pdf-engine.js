@@ -292,11 +292,12 @@ export function planJob(front, back, settings) {
       const slotIndex = row * cols + col;
       const placements = isBack ? settings.mixedBackPlacements : settings.mixedPlacements;
       const placement = settings.fillMode === 'mixed' ? placements?.[slotIndex] : null;
+      const empty = Boolean(placement?.empty);
       const sourceMeta = placement?.meta || meta;
-      const angle = placement ? placement.rotation ?? 0 : cellRotation(baseRotation, rotationPattern, row, col);
-      const fit = classifyPlacement(itemW, itemH, sourceMeta, angle);
+      const angle = placement && !empty ? placement.rotation ?? 0 : cellRotation(baseRotation, rotationPattern, row, col);
+      const fit = empty ? { status: 'empty', width: 0, height: 0 } : classifyPlacement(itemW, itemH, sourceMeta, angle);
       if (fit.status === 'oversized') throw new Error(`Artwork in slot ${slotIndex + 1} is larger than the confirmed item size.`);
-      const availability = outputBleedAvailability(sourceMeta, angle);
+      const availability = empty ? { top: 0, bottom: 0, left: 0, right: 0 } : outputBleedAvailability(sourceMeta, angle);
       if (destRow === 0) outer.top = Math.min(outer.top, availability.top);
       if (destRow === rows - 1) outer.bottom = Math.min(outer.bottom, availability.bottom);
       if (destCol === 0) outer.left = Math.min(outer.left, availability.left);
@@ -304,7 +305,7 @@ export function planJob(front, back, settings) {
       const cellX = x + destCol * (itemW + gutterSlit);
       const cellY = y + destRow * (itemH + gutterCut);
       cells.push({ row: destRow, col: destCol, partnerRow: row, partnerCol: col, slotIndex,
-        rotation: angle, sourceMeta, placementStatus: fit.status,
+        rotation: angle, sourceMeta, placementStatus: fit.status, empty,
         x: cellX, y: cellY, artX: cellX + (itemW - fit.width) / 2, artY: cellY + (itemH - fit.height) / 2,
         artW: fit.width, artH: fit.height });
     }
@@ -315,7 +316,7 @@ export function planJob(front, back, settings) {
         left: cell.col === 0 ? outer.left : gutterSlit / 2,
         right: cell.col === cols - 1 ? outer.right : gutterSlit / 2,
       };
-      cell.bleed = sourceBleedsForOutput(cell.sourceMeta, cell.rotation, desiredOutputBleed);
+      cell.bleed = cell.empty ? { top: 0, bottom: 0, left: 0, right: 0 } : sourceBleedsForOutput(cell.sourceMeta, cell.rotation, desiredOutputBleed);
     }
     const fits = x - outer.left >= -0.001 && x + width + outer.right <= sheetW + 0.001
       && y - outer.top >= -0.001 && y + height + outer.bottom <= sheetH + 0.001;
@@ -357,7 +358,9 @@ export async function buildJobPdf(front, back, settings) {
     for (const cell of geometry.cells) {
       const defaultInput = geometry.side === 'front' ? front : back;
       const placements = geometry.side === 'back' ? settings.mixedBackPlacements : settings.mixedPlacements;
-      const input = settings.fillMode === 'mixed' ? placements?.[cell.slotIndex] || defaultInput : defaultInput;
+      const placement = settings.fillMode === 'mixed' ? placements?.[cell.slotIndex] : null;
+      if (placement?.empty) continue;
+      const input = placement || defaultInput;
       let source = documents.get(input.file);
       if (!source) {
         source = await PDFDocument.load(await input.file.arrayBuffer(), { updateMetadata: false });

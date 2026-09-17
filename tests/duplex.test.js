@@ -72,6 +72,19 @@ test('mixed artwork keeps the master slot and centers smaller finished artwork w
   assert.throws(() => planJob(front, null, { ...settings, mixedPlacements: { 0: { meta: { ...front, width: 100 }, rotation: 0 } } }), /larger/);
 });
 
+test('an empty mixed block keeps its slot geometry while removing printable artwork and bleed', () => {
+  const baseline = planJob(front, null, { ...defaults, duplex: false, rows: 2, cols: 2, fillMode: 'mixed', mixedPlacements: {} });
+  const plan = planJob(front, null, { ...defaults, duplex: false, rows: 2, cols: 2, fillMode: 'mixed', mixedPlacements: { 1: { empty: true } } });
+  const baseCell = baseline.sides[0].cells.find(cell => cell.slotIndex === 1);
+  const emptyCell = plan.sides[0].cells.find(cell => cell.slotIndex === 1);
+  assert.equal(emptyCell.empty, true);
+  assert.equal(emptyCell.placementStatus, 'empty');
+  for (const property of ['x', 'y']) near(emptyCell[property], baseCell[property]);
+  near(plan.sides[0].itemW, baseline.sides[0].itemW);
+  near(plan.sides[0].itemH, baseline.sides[0].itemH);
+  assert.deepEqual(emptyCell.bleed, { top: 0, bottom: 0, left: 0, right: 0 });
+});
+
 test('duplex mixed artwork keeps paired slot ids while allowing independent side rotation', () => {
   const frontPlacement = { meta: front, pageIndex: 1, rotation: 180 };
   const backPlacement = { meta: back, pageIndex: 2, rotation: 180 };
@@ -147,4 +160,8 @@ test('PDF output: paired order, page dimensions, separate sides and single-sided
     mixedPlacements: { 1: { file: smallFile, meta: smallMeta, pageIndex: 0, rotation: 0 } },
   });
   assert.equal((await PDFDocument.load(mixed)).getPageCount(), 1);
+  const empty = await buildJobPdf({ file, meta, pageIndex: 0 }, null, {
+    ...defaults, duplex: false, rows: 1, cols: 1, fillMode: 'mixed', mixedPlacements: { 0: { empty: true } },
+  });
+  assert.equal((await PDFDocument.load(empty)).getPageCount(), 1);
 });
