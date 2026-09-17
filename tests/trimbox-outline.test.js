@@ -10,7 +10,7 @@ function content(page) {
   return streams.map(stream => Buffer.from(decodePDFRawStream(stream).decode()).toString()).join('\n');
 }
 
-test('TrimBox outlines are exact export-only rectangles on every front and back slot', async () => {
+test('TrimBox guides export exact outlines or default 2 mm corner marks on every slot', async () => {
   const mm = 72 / 25.4;
   const source = await PDFDocument.create();
   const frontPage = source.addPage([96 * mm, 58 * mm]);
@@ -33,11 +33,20 @@ test('TrimBox outlines are exact export-only rectangles on every front and back 
   const previewOnly = await PDFDocument.load(await buildJobPdf(front, back, { ...settings, trimBoxOutput: 'preview' }));
   for (const page of previewOnly.getPages()) assert.equal((content(page).match(/\nh\s+S\b/g) || []).length, 0);
 
-  const exported = await PDFDocument.load(await buildJobPdf(front, back, { ...settings, trimBoxOutput: 'export' }));
-  for (const page of exported.getPages()) {
+  const outlines = await PDFDocument.load(await buildJobPdf(front, back, { ...settings, trimBoxStyle: 'outline', trimBoxOutput: 'export' }));
+  for (const page of outlines.getPages()) {
     const operators = content(page);
     assert.equal((operators.match(/\nh\s+S\b/g) || []).length, 4);
     assert.match(operators, /0 1 0 0 K/); // Pure CMYK magenta stroke.
+    assert.match(operators, /0\.25 w/);
+  }
+
+  const corners = await PDFDocument.load(await buildJobPdf(front, back, { ...settings, trimBoxOutput: 'export' }));
+  for (const page of corners.getPages()) {
+    const operators = content(page);
+    assert.equal((operators.match(/\nh\s+S\b/g) || []).length, 0);
+    assert.equal((operators.match(/\nS\b/g) || []).length, 32); // Four corners × two 2 mm arms × four slots.
+    assert.match(operators, /0 1 0 0 K/);
     assert.match(operators, /0\.25 w/);
   }
 });

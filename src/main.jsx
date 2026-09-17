@@ -20,6 +20,7 @@ const OUTER_BLEED_MM = 3;
 const BARCODE_TOP_OFFSET_MM = 4;
 const BARCODE_RIGHT_OFFSET_MM = 25;
 const BARCODE_HEIGHT_MM = 5;
+const TRIMBOX_CORNER_LENGTH_MM = 2;
 const BARCODE_KNOCKOUT_PADDING_MM = 0.5;
 const STORAGE_DB_NAME = 'duplo-imposition-storage';
 const STORAGE_DB_VERSION = 1;
@@ -31,6 +32,20 @@ let pdfRendererPromise;
 let pdfBuildWorker;
 let pdfBuildRequestId = 0;
 const pendingPdfBuilds = new Map();
+
+function trimBoxCornerPath(cell, width, height) {
+  const arm = Math.min(TRIMBOX_CORNER_LENGTH_MM, width / 2, height / 2);
+  const left = cell.x;
+  const top = cell.y;
+  const right = left + width;
+  const bottom = top + height;
+  return [
+    `M ${left + arm} ${top} H ${left} V ${top + arm}`,
+    `M ${right - arm} ${top} H ${right} V ${top + arm}`,
+    `M ${left} ${bottom - arm} V ${bottom} H ${left + arm}`,
+    `M ${right - arm} ${bottom} H ${right} V ${bottom - arm}`,
+  ].join(' ');
+}
 
 function getPdfRenderer() {
   if (!pdfRendererPromise) {
@@ -152,17 +167,39 @@ function loadStoredPresets() {
 
 function NumberField({ label, value, setValue, min = 0, max = 999, unit = 'mm', factor = 1, disabled = false }) {
   const shownValue = Number((numberValue(value) / factor).toFixed(unit === 'in' ? 3 : 1));
+  const [draft, setDraft] = useState(String(shownValue));
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    if (!editing) setDraft(String(shownValue));
+  }, [shownValue, editing]);
+  const commitDraft = () => {
+    const parsed = Number(draft);
+    if (!Number.isFinite(parsed)) {
+      setDraft(String(shownValue));
+      setEditing(false);
+      return;
+    }
+    const normalized = unit === '' ? Math.trunc(parsed) : parsed;
+    setValue(Math.max(min, Math.min(max, normalized * factor)));
+    setEditing(false);
+  };
   return <label className="field"><span>{label}</span><div className="stepper">
     <button type="button" aria-label={`Decrease ${label}`} disabled={disabled} onClick={() => setValue(Math.max(min, numberValue(value) - factor))}><Minus size={13}/></button>
     <input
       aria-label={label}
-      value={shownValue}
+      value={editing ? draft : shownValue}
       type="number"
       min={min / factor}
       max={max / factor}
       step={unit === '' ? '1' : unit === 'in' ? '0.001' : '0.1'}
       disabled={disabled}
-      onChange={event => setValue(Math.max(min, Math.min(max, (unit === '' ? Math.trunc(numberValue(event.target.value)) : numberValue(event.target.value)) * factor)))}
+      onFocus={event => { setEditing(true); setDraft(event.currentTarget.value); event.currentTarget.select(); }}
+      onChange={event => setDraft(event.target.value)}
+      onBlur={commitDraft}
+      onKeyDown={event => {
+        if (event.key === 'Enter') event.currentTarget.blur();
+        if (event.key === 'Escape') { setDraft(String(shownValue)); setEditing(false); event.currentTarget.blur(); }
+      }}
     />
     <button type="button" aria-label={`Increase ${label}`} disabled={disabled} onClick={() => setValue(Math.min(max, numberValue(value) + factor))}><Plus size={13}/></button>
     {unit && <i>{unit}</i>}
@@ -225,6 +262,7 @@ function App() {
   const [marks, setMarks] = useState(true);
   const [duploRegMark, setDuploRegMark] = useState(true);
   const [trimBoxOutline, setTrimBoxOutline] = useState(false);
+  const [trimBoxStyle, setTrimBoxStyle] = useState('corners');
   const [trimBoxColor, setTrimBoxColor] = useState('#ff00ff');
   const [trimBoxOutput, setTrimBoxOutput] = useState('preview');
   const [unit, setUnit] = useState('mm');
@@ -282,6 +320,7 @@ function App() {
   const [editorOffset, setEditorOffset] = useState({ x: 0, y: 0 });
   const [editorDragging, setEditorDragging] = useState(false);
   const editorDrag = useRef(null);
+  const editorOpen = useRef(false);
   const editorToolbar = useRef(null);
   const proofImageUrls = useRef([]);
   const proofBuildQueue = useRef(Promise.resolve());
@@ -301,10 +340,10 @@ function App() {
   const inspectionError = inspection?.request === inspectionRequest ? inspection.error : '';
   const settings = useMemo(() => ({
     rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset,
-    horizontalPlacement, sideTrim, marks, duploRegMark, trimBoxOutline, trimBoxColor, trimBoxOutput, barcodeFile: activeBarcodeFile,
+    horizontalPlacement, sideTrim, marks, duploRegMark, trimBoxOutline, trimBoxStyle, trimBoxColor, trimBoxOutput, barcodeFile: activeBarcodeFile,
     duplex, backRotation, flipEdge, finishingSide, fillMode, mixedPlacements, mixedBackPlacements,
   }), [rotation, rotationPattern, cols, rows, sheetW, sheetH, gutterCut, gutterSlit, topOffset,
-    horizontalPlacement, sideTrim, marks, duploRegMark, trimBoxOutline, trimBoxColor, trimBoxOutput, activeBarcodeFile, duplex, backRotation, flipEdge, finishingSide,
+    horizontalPlacement, sideTrim, marks, duploRegMark, trimBoxOutline, trimBoxStyle, trimBoxColor, trimBoxOutput, activeBarcodeFile, duplex, backRotation, flipEdge, finishingSide,
     fillMode, mixedPlacements, mixedBackPlacements]);
   const planned = useMemo(() => {
     try { return { plan: planJob(meta, backMeta, settings), error: '' }; }
@@ -330,7 +369,7 @@ function App() {
   const shownSides = duplex ? (proofView === 'both' ? ['front', 'back'] : [proofView]) : ['front'];
   const exportReady = Boolean(outputBytes && !processing && canExport);
   const barcodeNeedsAttention = Boolean(barcodeEnabled && (!barcodeName || !barcodeFile));
-  const sheetLabel = paperPreset === '13x19' ? '13 × 19 in' : paperPreset === '12.4x18.4' ? '12.4 × 18.4 in' : `${display(sheetW)} × ${display(sheetH)}`;
+  const sheetLabel = paperPreset === '13x19' ? '13 × 19 in' : paperPreset === '12.4x18.4' ? '12.4 × 18.4 in' : paperPreset === '9x14' ? '9 × 14 in' : `${display(sheetW)} × ${display(sheetH)}`;
   const backSize = backMeta ? finishedSize(backMeta, backRotation) : null;
   const selectedPlacementMap = selectedPlacementSide === 'back' ? mixedBackPlacements : mixedPlacements;
   const selectedPlacement = selectedCell === null ? null : selectedPlacementMap[selectedCell] || null;
@@ -342,6 +381,10 @@ function App() {
   const selectedBlockMeta = selectedBlockEmpty ? null : selectedPlacement?.meta || selectedMasterMeta;
   const selectedBlockPage = selectedPlacement?.pageIndex ?? selectedMasterMeta?.pageIndex ?? 0;
   const selectedBlockRotation = selectedPlacement?.rotation ?? selectedMasterRotation;
+  const selectedSideGeometry = plan?.sides.find(side => side.side === selectedPlacementSide);
+  const selectedGeometryCell = selectedSideGeometry?.cells.find(cell => cell.slotIndex === selectedCell);
+  const editorVisible = fillMode === 'mixed' && masterConfirmed && selectedCell !== null
+    && shownSides.includes(selectedPlacementSide) && Boolean(selectedGeometryCell);
   const previewGeometry = previewCell ? plan?.sides.find(side => side.side === previewCell.side) : null;
   const previewCellGeometry = previewGeometry?.cells.find(cell => cell.slotIndex === previewCell?.cellIndex);
   const previewPlacementMap = previewCell?.side === 'back' ? mixedBackPlacements : mixedPlacements;
@@ -448,10 +491,13 @@ function App() {
   }, [previewCell, previewGeometry, previewCellGeometry, previewFile, previewMeta, previewPageIndex]);
 
   useEffect(() => {
+    const opening = selectedCell !== null && !editorOpen.current;
+    editorOpen.current = selectedCell !== null;
+    if (!opening) return;
     setEditorOffset({ x: 0, y: 0 });
     editorDrag.current = null;
     setEditorDragging(false);
-  }, [selectedCell, selectedPlacementSide, proofView, cols, rows, sheetW, sheetH]);
+  }, [selectedCell]);
 
   useEffect(() => {
     const keepEditorVisible = () => setEditorOffset({ x: 0, y: 0 });
@@ -589,7 +635,7 @@ function App() {
       name: cleanName,
       paperPreset, sheetW, sheetH, rotation, rotationPattern, cols, rows, gutterCut, gutterSlit,
       topTrim: topOffset, horizontalPlacement, sideTrim, marks, duploRegMark,
-      trimBoxOutline, trimBoxColor, trimBoxOutput, barcodeName, barcodeEnabled,
+      trimBoxOutline, trimBoxStyle, trimBoxColor, trimBoxOutput, barcodeName, barcodeEnabled,
       duplex, backInput, backRotation, flipEdge, finishingSide,
       frontPage: meta?.pageIndex ?? selectedPage, backPage: backMeta?.pageIndex ?? backSelectedPage,
     };
@@ -608,7 +654,7 @@ function App() {
     setRotation(preset.rotation); setRotationPattern(preset.rotationPattern || 'same'); setCols(preset.cols); setRows(preset.rows);
     setGutterCut(preset.gutterCut); setGutterSlit(preset.gutterSlit);
     setTopOffset(preset.topTrim); setHorizontalPlacement(preset.horizontalPlacement || 'center'); setSideTrim(preset.sideTrim ?? 10); setMarks(preset.marks ?? true); setDuploRegMark(preset.duploRegMark);
-    setTrimBoxOutline(Boolean(preset.trimBoxOutline)); setTrimBoxColor(preset.trimBoxColor || '#ff00ff'); setTrimBoxOutput(preset.trimBoxOutput || 'preview');
+    setTrimBoxOutline(Boolean(preset.trimBoxOutline)); setTrimBoxStyle(preset.trimBoxStyle === 'outline' ? 'outline' : 'corners'); setTrimBoxColor(preset.trimBoxColor || '#ff00ff'); setTrimBoxOutput(preset.trimBoxOutput || 'preview');
     setDuplex(Boolean(preset.duplex)); setBackInput(preset.backInput || 'same');
     setSelectedPage(preset.frontPage ?? 0); setBackSelectedPage(preset.backPage ?? 1);
     setBackRotation(preset.backRotation ?? 0); setFinishingSide(preset.finishingSide || 'front');
@@ -629,6 +675,7 @@ function App() {
     setPaperPreset(preset);
     if (preset === '13x19') { setSheetW(330.2); setSheetH(482.6); }
     if (preset === '12.4x18.4') { setSheetW(315); setSheetH(467.4); }
+    if (preset === '9x14') { setSheetW(228.6); setSheetH(355.6); }
   };
 
   const changeRotationPattern = pattern => {
@@ -652,7 +699,7 @@ function App() {
     setDuplex(false); setProofView('both'); setExportSide('both'); setFinishingSide('front');
     setPaperPreset('13x19'); setSheetW(330.2); setSheetH(482.6); setCols(1); setRows(1);
     setGutterCut(DEFAULT_GUTTER_MM); setGutterSlit(DEFAULT_GUTTER_MM); setTopOffset(10); setHorizontalPlacement('center'); setSideTrim(10);
-    setMarks(true); setDuploRegMark(true); setTrimBoxOutline(false); setTrimBoxColor('#ff00ff'); setTrimBoxOutput('preview'); setBarcodeFile(null); setBarcodeName(''); setBarcodeEnabled(false);
+    setMarks(true); setDuploRegMark(true); setTrimBoxOutline(false); setTrimBoxStyle('corners'); setTrimBoxColor('#ff00ff'); setTrimBoxOutput('preview'); setBarcodeFile(null); setBarcodeName(''); setBarcodeEnabled(false);
     setMasterConfirmed(false); setFillMode('repeat'); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); setPlacementNotice(''); setPlacementUndo(null); setLayoutNotice('');
     setPresetName(''); setSelectedPresetId(''); setPresetsOpen(false); setBarcodeOpen(false);
     setEditingSide('front'); changeInspectorTab('artwork'); setExportOpen(false);
@@ -917,8 +964,6 @@ function App() {
       <div className={`canvas-wrap duplex-canvas ${shownSides.length === 2 ? 'two-proofs' : ''}`} aria-busy={processing}>
         {shownSides.map((side, index) => {
           const sideGeometry = plan?.sides.find(item => item.side === side);
-          const selectedGeometryCell = sideGeometry?.cells.find(cell => cell.slotIndex === selectedCell);
-          const toolbarBelow = Boolean(selectedGeometryCell && selectedGeometryCell.y / sheetH < 0.14);
           return <figure className="proof-panel" key={side}>
           <figcaption>{side === 'front' ? 'Front' : 'Back'}<small>Output proof</small></figcaption>
           <div className="proof-frame"><div className="proof-stage" style={{ '--sheet-ratio': sheetW / sheetH }}>
@@ -926,7 +971,9 @@ function App() {
             <div className="sheet proof-sheet" style={{ aspectRatio: sheetW / sheetH, '--sheet-ratio': sheetW / sheetH }}>
               {proofImages[side === 'front' ? 0 : 1] ? <img className="proof-image" src={proofImages[side === 'front' ? 0 : 1]} alt={`${side === 'front' ? 'Front' : 'Back'} exported PDF proof`}/> : <div className="proof-empty">{processing ? 'Generating output proof…' : statusError || (sourceFile && !geometricFit ? 'Front or Back layout does not fit this sheet' : 'Upload a PDF to generate the exact output proof')}</div>}
               {trimBoxOutline && trimBoxOutput === 'preview' && sideGeometry && <svg className="trimbox-outline-overlay" viewBox={`0 0 ${sheetW} ${sheetH}`} aria-label={`${side === 'front' ? 'Front' : 'Back'} TrimBox preview guide`}>
-                {sideGeometry.cells.map(cell => <rect key={cell.slotIndex} x={cell.x} y={cell.y} width={sideGeometry.itemW} height={sideGeometry.itemH} style={{ stroke: trimBoxColor }}/>)}</svg>}
+                {sideGeometry.cells.map(cell => trimBoxStyle === 'outline'
+                  ? <rect key={cell.slotIndex} x={cell.x} y={cell.y} width={sideGeometry.itemW} height={sideGeometry.itemH} style={{ stroke: trimBoxColor }}/>
+                  : <path key={cell.slotIndex} d={trimBoxCornerPath(cell, sideGeometry.itemW, sideGeometry.itemH)} style={{ stroke: trimBoxColor }}/>)}</svg>}
               {fillMode === 'repeat' && masterConfirmed && sideGeometry && <div className="repeat-preview-overlay" aria-label={`${side === 'back' ? 'Back' : 'Front'} artwork preview controls`}>{sideGeometry.cells.map(cell => <div key={cell.slotIndex} className="repeat-preview-slot" style={{ left: `${cell.x / sheetW * 100}%`, top: `${cell.y / sheetH * 100}%`, width: `${sideGeometry.itemW / sheetW * 100}%`, height: `${sideGeometry.itemH / sheetH * 100}%` }}><button type="button" className="placement-slot-preview" aria-label={`Preview ${side} block ${cell.slotIndex + 1}`} title="Preview block" onClick={() => setPreviewCell({ side, cellIndex: cell.slotIndex })}><ZoomIn size={15}/></button></div>)}</div>}
               {fillMode === 'mixed' && masterConfirmed && sideGeometry && <div className="placement-overlay" aria-label={`${side === 'back' ? 'Back' : 'Front'} mixed artwork slots`}>{sideGeometry.cells.map(cell => {
                 const sidePlacements = side === 'back' ? mixedBackPlacements : mixedPlacements;
@@ -949,22 +996,22 @@ function App() {
                 </div>;
               })}</div>}
             </div>
-            {selectedPlacementSide === side && fillMode === 'mixed' && masterConfirmed && selectedGeometryCell && <div ref={editorToolbar} className={`placement-context-toolbar ${toolbarBelow ? 'is-below' : ''} ${editorDragging ? 'is-dragging' : ''}`}
-              style={{ left: '50%', top: `${(toolbarBelow ? selectedGeometryCell.y + sideGeometry.itemH : selectedGeometryCell.y) / sheetH * 100}%`, '--editor-drag-x': `${editorOffset.x}px`, '--editor-drag-y': `${editorOffset.y}px` }} role="group" aria-label={`Edit ${side} block ${selectedCell + 1}`}>
-              <div className="placement-context-title" tabIndex={0} aria-label="Move block editor. Drag or use arrow keys. Press Home to reset position." title="Drag to move · double-click to reset position" onPointerDown={startEditorDrag} onPointerMove={moveEditorDrag} onPointerUp={endEditorDrag} onPointerCancel={endEditorDrag} onDoubleClick={() => setEditorOffset({ x: 0, y: 0 })} onKeyDown={moveEditorWithKeyboard}><GripHorizontal className="placement-drag-grip" size={18} aria-hidden="true"/><div><b>{side === 'back' ? 'Back' : 'Front'} · Block {selectedCell + 1}</b><span title={selectedBlockEmpty ? 'Empty block' : selectedPlacement ? selectedPlacement.file.name : selectedMasterFile?.name}>{selectedBlockEmpty ? 'Empty block · cut position retained' : selectedPlacement ? selectedPlacement.file.name : selectedMasterFile?.name || 'Master artwork'}</span></div><button type="button" className="context-close" aria-label="Close block editor" onClick={() => setSelectedCell(null)}><X size={15}/></button></div>
-              {selectedBlockMeta ? <div className="placement-primary-controls">
-                {selectedBlockMeta && <div className="placement-control-group"><span className="placement-control-caption">Page</span><div className="compact-page-control" aria-label="Block page navigation"><button type="button" aria-label="Previous block page" disabled={selectedBlockPage === 0} onClick={() => updatePlacementPage(selectedBlockPage - 1)}><ChevronLeft size={15}/></button><select aria-label="Block PDF page" value={selectedBlockPage} onChange={event => updatePlacementPage(Number(event.target.value))}>{Array.from({ length: selectedBlockMeta.pages }, (_, pageIndex) => <option key={pageIndex} value={pageIndex}>{pageIndex + 1} / {selectedBlockMeta.pages}</option>)}</select><button type="button" aria-label="Next block page" disabled={selectedBlockPage === selectedBlockMeta.pages - 1} onClick={() => updatePlacementPage(selectedBlockPage + 1)}><ChevronRight size={15}/></button></div></div>}
-                <label className="placement-control-group"><span className="placement-control-caption">Rotation</span><span className="compact-rotation-control"><RotateCw size={14}/><select aria-label="Block rotation" value={selectedBlockRotation} onChange={event => updatePlacementRotation(Number(event.target.value))}>{[0, 90, 180, 270].map(angle => <option key={angle} value={angle} disabled={classifyPlacement(itemW, itemH, selectedBlockMeta, angle).status === 'oversized'}>{angle}°</option>)}</select></span></label>
-              </div> : <div className="placement-empty-state"><b>Blank block</b><span>No artwork will be printed here. Sheet geometry and cut marks stay unchanged.</span></div>}
-              <div className="placement-copy-tools"><span className="placement-control-caption">Copy this block</span><div className="placement-copy-pad">
-                <button type="button" aria-label="Copy block up" title="Copy up" disabled={!adjacentPlacement(side, selectedCell, -1, 0)} onClick={() => copyPlacementToAdjacent(-1, 0, 'up')}><ArrowUp size={14}/></button>
-                <button type="button" aria-label="Copy block left" title="Copy left" disabled={!adjacentPlacement(side, selectedCell, 0, -1)} onClick={() => copyPlacementToAdjacent(0, -1, 'left')}><ArrowLeft size={14}/></button><span aria-hidden="true"/><button type="button" aria-label="Copy block right" title="Copy right" disabled={!adjacentPlacement(side, selectedCell, 0, 1)} onClick={() => copyPlacementToAdjacent(0, 1, 'right')}><ArrowRight size={14}/></button>
-                <button type="button" aria-label="Copy block down" title="Copy down" disabled={!adjacentPlacement(side, selectedCell, 1, 0)} onClick={() => copyPlacementToAdjacent(1, 0, 'down')}><ArrowDown size={14}/></button>
-              </div></div>
-              <div className="placement-context-actions"><button type="button" onClick={changePlacementFile}><FileUp size={13}/> Change PDF</button><button type="button" disabled={!selectedPlacement} onClick={useMasterPlacement}><RefreshCcw size={13}/> Use master</button><button type="button" className="placement-empty-action" disabled={selectedBlockEmpty} aria-label="Clear block and leave empty" title="Clear block · leave empty" onClick={emptyPlacement}><Trash2 size={14}/></button></div>
-            </div>}
           </div></div>
         </figure>;})}
+        {editorVisible && <div ref={editorToolbar} className={`placement-context-toolbar is-centered ${editorDragging ? 'is-dragging' : ''}`}
+          style={{ '--editor-drag-x': `${editorOffset.x}px`, '--editor-drag-y': `${editorOffset.y}px` }} role="group" aria-label={`Edit ${selectedPlacementSide} block ${selectedCell + 1}`}>
+          <div className="placement-context-title" tabIndex={0} aria-label="Move block editor. Drag or use arrow keys. Press Home to reset position." title="Drag to move · double-click to reset position" onPointerDown={startEditorDrag} onPointerMove={moveEditorDrag} onPointerUp={endEditorDrag} onPointerCancel={endEditorDrag} onDoubleClick={() => setEditorOffset({ x: 0, y: 0 })} onKeyDown={moveEditorWithKeyboard}><GripHorizontal className="placement-drag-grip" size={18} aria-hidden="true"/><div><b>{selectedPlacementSide === 'back' ? 'Back' : 'Front'} · Block {selectedCell + 1}</b><span title={selectedBlockEmpty ? 'Empty block' : selectedPlacement ? selectedPlacement.file.name : selectedMasterFile?.name}>{selectedBlockEmpty ? 'Empty block · cut position retained' : selectedPlacement ? selectedPlacement.file.name : selectedMasterFile?.name || 'Master artwork'}</span></div><button type="button" className="context-close" aria-label="Close block editor" onClick={() => setSelectedCell(null)}><X size={15}/></button></div>
+          {selectedBlockMeta ? <div className="placement-primary-controls">
+            <div className="placement-control-group"><span className="placement-control-caption">Page</span><div className="compact-page-control" aria-label="Block page navigation"><button type="button" aria-label="Previous block page" disabled={selectedBlockPage === 0} onClick={() => updatePlacementPage(selectedBlockPage - 1)}><ChevronLeft size={15}/></button><select aria-label="Block PDF page" value={selectedBlockPage} onChange={event => updatePlacementPage(Number(event.target.value))}>{Array.from({ length: selectedBlockMeta.pages }, (_, pageIndex) => <option key={pageIndex} value={pageIndex}>{pageIndex + 1} / {selectedBlockMeta.pages}</option>)}</select><button type="button" aria-label="Next block page" disabled={selectedBlockPage === selectedBlockMeta.pages - 1} onClick={() => updatePlacementPage(selectedBlockPage + 1)}><ChevronRight size={15}/></button></div></div>
+            <label className="placement-control-group"><span className="placement-control-caption">Rotation</span><span className="compact-rotation-control"><RotateCw size={14}/><select aria-label="Block rotation" value={selectedBlockRotation} onChange={event => updatePlacementRotation(Number(event.target.value))}>{[0, 90, 180, 270].map(angle => <option key={angle} value={angle} disabled={classifyPlacement(itemW, itemH, selectedBlockMeta, angle).status === 'oversized'}>{angle}°</option>)}</select></span></label>
+          </div> : <div className="placement-empty-state"><b>Blank block</b><span>No artwork will be printed here. Sheet geometry and cut marks stay unchanged.</span></div>}
+          <div className="placement-copy-tools"><span className="placement-control-caption">Copy this block</span><div className="placement-copy-pad">
+            <button type="button" aria-label="Copy block up" title="Copy up" disabled={!adjacentPlacement(selectedPlacementSide, selectedCell, -1, 0)} onClick={() => copyPlacementToAdjacent(-1, 0, 'up')}><ArrowUp size={14}/></button>
+            <button type="button" aria-label="Copy block left" title="Copy left" disabled={!adjacentPlacement(selectedPlacementSide, selectedCell, 0, -1)} onClick={() => copyPlacementToAdjacent(0, -1, 'left')}><ArrowLeft size={14}/></button><span aria-hidden="true"/><button type="button" aria-label="Copy block right" title="Copy right" disabled={!adjacentPlacement(selectedPlacementSide, selectedCell, 0, 1)} onClick={() => copyPlacementToAdjacent(0, 1, 'right')}><ArrowRight size={14}/></button>
+            <button type="button" aria-label="Copy block down" title="Copy down" disabled={!adjacentPlacement(selectedPlacementSide, selectedCell, 1, 0)} onClick={() => copyPlacementToAdjacent(1, 0, 'down')}><ArrowDown size={14}/></button>
+          </div></div>
+          <div className="placement-context-actions"><button type="button" onClick={changePlacementFile}><FileUp size={13}/> Change PDF</button><button type="button" disabled={!selectedPlacement} onClick={useMasterPlacement}><RefreshCcw size={13}/> Use master</button><button type="button" className="placement-empty-action" disabled={selectedBlockEmpty} aria-label="Clear block and leave empty" title="Clear block · leave empty" onClick={emptyPlacement}><Trash2 size={14}/></button></div>
+        </div>}
       </div>
       {previewCell && previewGeometry && previewCellGeometry && <div className="block-preview-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setPreviewCell(null); }}>
         <section className="block-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="block-preview-title">
@@ -1009,7 +1056,7 @@ function App() {
       </section>
       <div className="tab-panel" role="tabpanel" id="panel-layout" aria-labelledby="tab-layout" hidden={inspectorTab !== 'layout'}>
         <div className="panel-heading"><span className="eyebrow">02 / ARRANGE</span><h1>Build the sheet</h1></div>
-        <section><h2>Sheet & repeat</h2><label className="select"><span>Paper size</span><select aria-label="Sheet preset" value={paperPreset} onChange={event => selectPaper(event.target.value)}><option value="13x19">13 × 19 in</option><option value="12.4x18.4">12.4 × 18.4 in</option><option value="custom">Custom size</option></select></label>{paperPreset === 'custom' && <div className="two"><NumberField label="Sheet width" value={sheetW} setValue={setSheetW} min={MIN_SHEET_MM} max={MAX_SHEET_WIDTH_MM} unit={unit} factor={factor}/><NumberField label="Sheet length" value={sheetH} setValue={setSheetH} min={MIN_SHEET_MM} max={MAX_SHEET_HEIGHT_MM} unit={unit} factor={factor}/></div>}<div className="two"><NumberField label="Columns" value={cols} setValue={setCols} min={1} max={25} unit=""/><NumberField label="Rows" value={rows} setValue={setRows} min={1} max={25} unit=""/></div><div className="layout-total"><span>Total up</span><b>{cols * rows}</b></div></section>
+        <section><h2>Sheet & repeat</h2><label className="select"><span>Paper size</span><select aria-label="Sheet preset" value={paperPreset} onChange={event => selectPaper(event.target.value)}><option value="13x19">13 × 19 in</option><option value="12.4x18.4">12.4 × 18.4 in</option><option value="9x14">9 × 14 in</option><option value="custom">Custom size</option></select></label>{paperPreset === 'custom' && <div className="two"><NumberField label="Sheet width" value={sheetW} setValue={setSheetW} min={MIN_SHEET_MM} max={MAX_SHEET_WIDTH_MM} unit={unit} factor={factor}/><NumberField label="Sheet length" value={sheetH} setValue={setSheetH} min={MIN_SHEET_MM} max={MAX_SHEET_HEIGHT_MM} unit={unit} factor={factor}/></div>}<div className="two"><NumberField label="Columns" value={cols} setValue={setCols} min={1} max={25} unit=""/><NumberField label="Rows" value={rows} setValue={setRows} min={1} max={25} unit=""/></div><div className="layout-total"><span>Total up</span><b>{cols * rows}</b></div></section>
         <section><PatternPicker value={rotationPattern} onChange={changeRotationPattern} duplex={duplex}/>{layoutNotice && <p className="layout-pattern-notice" role="status">{layoutNotice}</p>}</section>
         {duplex && <section><details className="inline-help duplex-guidance"><summary>Duplex alignment · Long edge</summary><p className="hint">The sheet always turns left / right. Print one test sheet at 100% before production. Back cut positions follow Front; artwork text is never mirrored.</p>{plan?.sides[1] && <div className="calculation"><span>Back placement · automatic</span><b>Top {display(plan.sides[1].y)} · Right {display(sheetW - plan.sides[1].x - layoutW)}</b></div>}</details></section>}
         <details className="advanced output-details"><summary>Output size & bleed</summary><div className="details-body"><div className="summary-grid"><span>Finished item<b>{display(itemW)} × {display(itemH)}</b></span><span>Layout<b>{display(layoutW)} × {display(layoutH)}</b></span><span>Outer bleed<b>T {display(appliedOuterBleed.top)} · B {display(appliedOuterBleed.bottom)} · L {display(appliedOuterBleed.left)} · R {display(appliedOuterBleed.right)}</b></span></div>{duplex && plan?.sides[1] && <p className="hint">Back outer bleed: {Object.entries(plan.sides[1].outer).map(([side, value]) => `${side} ${display(value)}`).join(' · ')}</p>}</div></details>
@@ -1017,11 +1064,12 @@ function App() {
       </div>
       <div className="tab-panel marks-panel" role="tabpanel" id="panel-marks" aria-labelledby="tab-marks" hidden={inspectorTab !== 'marks'}>
         <div className="panel-heading"><span className="eyebrow">03 / OUTPUT MARKS</span><h1>Marks</h1><p className="section-intro">Control item outlines and sheet finishing marks.</p></div>
-        <section className="mark-setting-card"><label className="toggle-row mark-main-toggle"><span><b>TrimBox outline</b><small>Exact confirmed TrimBox · 0 mm offset</small></span><input aria-label="TrimBox outline" type="checkbox" checked={trimBoxOutline} onChange={event => setTrimBoxOutline(event.target.checked)}/></label>
+        <section className="mark-setting-card"><label className="toggle-row mark-main-toggle"><span><b>TrimBox guide</b><small>Exact confirmed TrimBox · 0 mm offset</small></span><input aria-label="TrimBox guide" type="checkbox" checked={trimBoxOutline} onChange={event => setTrimBoxOutline(event.target.checked)}/></label>
           {trimBoxOutline && <div className="mark-setting-options">
+            <SegmentedChoice label="Style" name="TrimBox guide style" value={trimBoxStyle} options={[{ value: 'corners', label: 'Corners' }, { value: 'outline', label: 'Outline' }]} onChange={setTrimBoxStyle}/>
             <fieldset className="mark-color-picker"><legend>Color</legend><div className="mark-color-options">{[['#000000','Black 100K'],['#00ffff','Cyan'],['#ff00ff','Magenta'],['#ffff00','Yellow']].map(([color,label]) => <button key={color} type="button" className={trimBoxColor.toLowerCase() === color ? 'is-selected' : ''} aria-label={`${label} TrimBox color`} aria-pressed={trimBoxColor.toLowerCase() === color} title={label} style={{ '--mark-color': color }} onClick={() => setTrimBoxColor(color)}><span/></button>)}<label className="custom-mark-color" title="Custom color"><input aria-label="Custom TrimBox color" type="color" value={trimBoxColor} onChange={event => setTrimBoxColor(event.target.value)}/><span style={{ '--mark-color': trimBoxColor }}/></label></div></fieldset>
             <SegmentedChoice label="Output" name="TrimBox output" value={trimBoxOutput} options={[{ value: 'preview', label: 'Preview only' }, { value: 'export', label: 'Include in PDF' }]} onChange={setTrimBoxOutput}/>
-            <div className="calculation mark-spec"><span>Position</span><b>Exact TrimBox · 0 mm offset · 0.25 pt</b></div>
+            <div className="calculation mark-spec"><span>Position</span><b>{trimBoxStyle === 'corners' ? 'Exact TrimBox · 0 mm offset · 2 mm arms · 0.25 pt' : 'Exact TrimBox · 0 mm offset · 0.25 pt'}</b></div>
           </div>}
         </section>
         <section><h2>Sheet marks</h2><label className="toggle-row"><span><b>Production trim marks</b><small>Corner, gutter cut and gutter slit marks</small></span><input type="checkbox" checked={marks} onChange={event => setMarks(event.target.checked)}/></label>{(activeBarcodeFile || duploRegMark) && marks && <p className="hint barcode-mark-notice">{activeBarcodeFile && duploRegMark ? 'Barcode and registration marks on' : activeBarcodeFile ? 'Barcode on' : 'Registration mark on'}: top-right corner trim marks hidden {duplex ? finishingSide === 'both' ? 'on both sides' : `on the ${finishingSide}` : 'on this sheet'}.</p>}</section>

@@ -15,6 +15,7 @@ const BARCODE_RIGHT_OFFSET_MM = 25;
 const BARCODE_HEIGHT_MM = 5;
 const BARCODE_KNOCKOUT_PADDING_MM = 0.5;
 const TRIMBOX_STROKE_POINTS = 0.25;
+const TRIMBOX_CORNER_LENGTH_MM = 2;
 
 function sourceToOutputSides(rotation) {
   if (rotation === 90) return { top: 'left', bottom: 'right', left: 'bottom', right: 'top' };
@@ -133,15 +134,33 @@ function trimBoxMarkColor(hex = '#ff00ff') {
   return rgb(((value >> 16) & 255) / 255, ((value >> 8) & 255) / 255, (value & 255) / 255);
 }
 
-function drawTrimBoxOutlines(page, geometry, sheetHeight, color) {
-  for (const cell of geometry.cells) page.drawRectangle({
-    x: cell.x * POINTS_PER_MM,
-    y: (sheetHeight - cell.y - geometry.itemH) * POINTS_PER_MM,
-    width: geometry.itemW * POINTS_PER_MM,
-    height: geometry.itemH * POINTS_PER_MM,
-    borderColor: trimBoxMarkColor(color),
-    borderWidth: TRIMBOX_STROKE_POINTS,
-  });
+function drawTrimBoxGuides(page, geometry, sheetHeight, color, style = 'corners') {
+  const markColor = trimBoxMarkColor(color);
+  for (const cell of geometry.cells) {
+    const left = cell.x * POINTS_PER_MM;
+    const bottom = (sheetHeight - cell.y - geometry.itemH) * POINTS_PER_MM;
+    const width = geometry.itemW * POINTS_PER_MM;
+    const height = geometry.itemH * POINTS_PER_MM;
+    if (style === 'outline') {
+      page.drawRectangle({
+        x: left, y: bottom, width, height,
+        borderColor: markColor,
+        borderWidth: TRIMBOX_STROKE_POINTS,
+      });
+      continue;
+    }
+    const right = left + width;
+    const top = bottom + height;
+    const arm = Math.min(TRIMBOX_CORNER_LENGTH_MM * POINTS_PER_MM, width / 2, height / 2);
+    const line = (x1, y1, x2, y2) => page.drawLine({
+      start: { x: x1, y: y1 }, end: { x: x2, y: y2 },
+      color: markColor, thickness: TRIMBOX_STROKE_POINTS,
+    });
+    line(left, top, left + arm, top); line(left, top, left, top - arm);
+    line(right, top, right - arm, top); line(right, top, right, top - arm);
+    line(left, bottom, left + arm, bottom); line(left, bottom, left, bottom + arm);
+    line(right, bottom, right - arm, bottom); line(right, bottom, right, bottom + arm);
+  }
 }
 
 function drawDuploRegistrationMark(page) {
@@ -384,7 +403,7 @@ export async function buildJobPdf(front, back, settings) {
         cell.artX * POINTS_PER_MM, (settings.sheetH - cell.artY - cell.artH) * POINTS_PER_MM);
     }
     if (settings.trimBoxOutline && settings.trimBoxOutput === 'export') {
-      drawTrimBoxOutlines(outputPage, geometry, settings.sheetH, settings.trimBoxColor);
+      drawTrimBoxGuides(outputPage, geometry, settings.sheetH, settings.trimBoxColor, settings.trimBoxStyle);
     }
     const finishingMarkOnSide = finishingOnSide(geometry.side, settings);
     const barcodeOnSide = Boolean(settings.barcodeFile) && finishingMarkOnSide;
