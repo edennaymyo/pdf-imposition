@@ -1,4 +1,7 @@
-import { cmyk, degrees, PDFDocument, rgb } from 'pdf-lib';
+import {
+  cmyk, decodePDFRawStream, degrees, PDFArray, PDFDict, PDFDocument,
+  PDFName, PDFRawStream, rgb,
+} from 'pdf-lib';
 const MM_PER_POINT = 25.4 / 72;
 const POINTS_PER_MM = 72 / 25.4;
 const MIN_SHEET_MM = 210;
@@ -16,6 +19,164 @@ const BARCODE_HEIGHT_MM = 5;
 const BARCODE_KNOCKOUT_PADDING_MM = 0.5;
 const TRIMBOX_STROKE_POINTS = 0.25;
 const TRIMBOX_CORNER_LENGTH_MM = 2;
+
+const CONTENT_OPERATORS = new Set([
+  'b', 'B', 'b*', 'B*', 'BDC', 'BI', 'BMC', 'BT', 'BX', 'c', 'cm', 'CS', 'cs',
+  'd', 'd0', 'd1', 'Do', 'DP', 'EI', 'EMC', 'ET', 'EX', 'f', 'F', 'f*', 'G',
+  'g', 'gs', 'h', 'i', 'ID', 'j', 'J', 'K', 'k', 'l', 'm', 'M', 'MP', 'n',
+  'q', 'Q', 're', 'RG', 'rg', 'ri', 's', 'S', 'SC', 'SCN', 'sc', 'scn', 'sh',
+  'Tc', 'Td', 'TD', 'Tf', 'Tj', 'TJ', 'TL', 'Tm', 'Tr', 'Ts', 'Tw', 'Tz',
+  'v', 'w', 'W', 'W*', 'y', "'", '"',
+]);
+const PATH_OPERATORS = new Set(['m', 'l', 'c', 'v', 'y', 'h', 're']);
+
+function tokenizeContentStream(content) {
+  const tokens = [];
+  const whitespace = /[\0\t\n\f\r ]/;
+  const delimiter = /[\0\t\n\f\r ()<>\[\]{}/%]/;
+  let index = 0;
+  while (index < content.length) {
+    const char = content[index];
+    if (whitespace.test(char)) { index += 1; continue; }
+    if (char === '%') {
+      while (index < content.length && content[index] !== '\n' && content[index] !== '\r') index += 1;
+      continue;
+    }
+    if (char === '(') {
+      const start = index++;
+      let depth = 1;
+      while (index < content.length && depth > 0) {
+        if (content[index] === '\\') { index += 2; continue; }
+        if (content[index] === '(') depth += 1;
+        if (content[index] === ')') depth -= 1;
+        index += 1;
+      }
+      if (depth !== 0) return null;
+      tokens.push(content.slice(start, index));
+      continue;
+    }
+    if (char === '<') {
+      const paired = content[index + 1] === '<';
+      const closing = paired ? '>>' : '>';
+      const start = index;
+      index += paired ? 2 : 1;
+      const end = content.indexOf(closing, index);
+      if (end < 0) return null;
+      index = end + closing.length;
+      tokens.push(content.slice(start, index));
+      continue;
+    }
+    if ('[]{}'.includes(char)) { tokens.push(char); index += 1; continue; }
+    if (char === '/') {
+      const start = index++;
+      while (index < content.length && !delimiter.test(content[index])) index += 1;
+      tokens.push(content.slice(start, index));
+      continue;
+    }
+    const start = index++;
+    while (index < content.length && !delimiter.test(content[index])) index += 1;
+    tokens.push(content.slice(start, index));
+  }
+  return tokens;
+}
+
+// Adobe and other prepress tools normally draw crop marks with the PDF
+// Registration color (/Separation /All). Remove only pure stroked paths using
+// that color; fills, images, ordinary black strokes and all bleed artwork stay.
+export function stripRegistrationColorStrokes(content, registrationColorSpaces) {
+  if (!registrationColorSpaces?.size) return content;
+  const tokens = tokenizeContentStream(content);
+  if (!tokens || tokens.includes('BI')) return content;
+  const output = [];
+  const operands = [];
+  let strokeColorSpace = null;
+  const graphicsStack = [];
+  let path = null;
+  let removed = false;
+  const write = operation => output.push(...operation);
+  for (const token of tokens) {
+    if (!CONTENT_OPERATORS.has(token)) { operands.push(token); continue; }
+    const operation = [...operands, token];
+    operands.length = 0;
+    if (token === 'q') graphicsStack.push(strokeColorSpace);
+    if (token === 'Q') strokeColorSpace = graphicsStack.pop() ?? null;
+    if (token === 'CS') strokeColorSpace = operation.at(-2) || null;
+    if (PATH_OPERATORS.has(token)) {
+      if (!path) path = [];
+      path.push(...operation);
+      continue;
+    }
+    if (path) {
+      if ((token === 'S' || token === 's') && registrationColorSpaces.has(strokeColorSpace)) {
+        path = null;
+        removed = true;
+        continue;
+      }
+      if (token === 'n') { path = null; continue; }
+      path.push(...operation);
+      if (['S', 's', 'f', 'F', 'f*', 'B', 'B*', 'b', 'b*'].includes(token)) {
+        write(path);
+        path = null;
+      }
+      continue;
+    }
+    write(operation);
+  }
+  if (path) write(path);
+  write(operands);
+  return removed ? `${output.join(' ')}\n` : content;
+}
+
+function binaryString(bytes) {
+  let output = '';
+  for (let index = 0; index < bytes.length; index += 1) output += String.fromCharCode(bytes[index]);
+  return output;
+}
+
+function binaryBytes(value) {
+  return Uint8Array.from(value, char => char.charCodeAt(0) & 255);
+}
+
+function registrationColorSpaceNames(page, document) {
+  const resources = page.node.Resources();
+  const colorSpacesEntry = resources?.get(PDFName.of('ColorSpace'));
+  const colorSpaces = colorSpacesEntry ? document.context.lookup(colorSpacesEntry) : null;
+  if (!(colorSpaces instanceof PDFDict)) return new Set();
+  const names = new Set();
+  for (const [name, reference] of colorSpaces.entries()) {
+    const definition = document.context.lookup(reference);
+    if (!(definition instanceof PDFArray) || definition.size() < 2) continue;
+    const family = document.context.lookup(definition.get(0));
+    const colorant = document.context.lookup(definition.get(1));
+    if (family instanceof PDFName && colorant instanceof PDFName
+      && family.toString() === '/Separation' && colorant.toString() === '/All') names.add(name.toString());
+  }
+  return names;
+}
+
+function removeSourceRegistrationMarks(document) {
+  for (const page of document.getPages()) {
+    const names = registrationColorSpaceNames(page, document);
+    if (!names.size) continue;
+    const contentsEntry = page.node.get(PDFName.of('Contents'));
+    if (!contentsEntry) continue;
+    const contents = document.context.lookup(contentsEntry);
+    const streams = contents instanceof PDFArray
+      ? contents.asArray().map(reference => document.context.lookup(reference))
+      : [contents];
+    if (!streams.every(stream => stream instanceof PDFRawStream)) continue;
+    let changed = false;
+    const sanitized = streams.map(stream => {
+      const original = binaryString(decodePDFRawStream(stream).decode());
+      const clean = stripRegistrationColorStrokes(original, names);
+      if (clean !== original) changed = true;
+      return clean;
+    });
+    if (!changed) continue;
+    const stream = document.context.flateStream(binaryBytes(sanitized.join('\n')));
+    page.node.set(PDFName.of('Contents'), document.context.register(stream));
+  }
+}
 
 function sourceToOutputSides(rotation) {
   if (rotation === 90) return { top: 'left', bottom: 'right', left: 'bottom', right: 'top' };
@@ -245,6 +406,7 @@ export async function buildPlacementPreviewPdf(input, slotWidth, slotHeight, rot
   const fit = classifyPlacement(slotWidth, slotHeight, input.meta, rotation);
   if (fit.status === 'oversized') throw new Error('This artwork is larger than the confirmed slot.');
   const source = await PDFDocument.load(await input.file.arrayBuffer(), { updateMetadata: false });
+  removeSourceRegistrationMarks(source);
   const sourcePage = source.getPage(input.pageIndex);
   const trim = sourcePage.getTrimBox();
   const output = await PDFDocument.create();
@@ -383,6 +545,7 @@ export async function buildJobPdf(front, back, settings) {
       let source = documents.get(input.file);
       if (!source) {
         source = await PDFDocument.load(await input.file.arrayBuffer(), { updateMetadata: false });
+        removeSourceRegistrationMarks(source);
         documents.set(input.file, source);
       }
       const sourcePage = source.getPage(input.pageIndex);

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PDFDocument, rgb } from 'pdf-lib';
-import { planJob, buildJobPdf, extractOutputSide, barcodeCollisions, outputBleedAvailability, classifyPlacement } from '../src/pdf-engine.js';
+import { decodePDFRawStream, PDFDict, PDFDocument, PDFName, rgb } from 'pdf-lib';
+import { planJob, buildJobPdf, extractOutputSide, barcodeCollisions, outputBleedAvailability, classifyPlacement, stripRegistrationColorStrokes } from '../src/pdf-engine.js';
 
 const front = { width: 88.9, height: 50.8, top: 3, bottom: 2.5, left: 1.5, right: 3 };
 const back = { ...front, top: 1, bottom: 3, left: 3, right: 2 };
@@ -127,6 +127,42 @@ test('barcode collision checks only finishing sides, including reflected short-e
   settings.flipEdge = 'short';
   plan = planJob(front, back, settings);
   assert.deepEqual(barcodeCollisions(plan, { width: 35, height: 5 }, settings), ['front']);
+});
+
+test('registration-color crop marks are removed while source bleed artwork is preserved', async () => {
+  const content = [
+    '0 0 0 1 k',
+    '24.496 24.496 269.007 161.007 re f',
+    '/CS0 CS 0 SCN 0.25 w',
+    'q 1 0 0 1 27 177 cm',
+    '0 0 m -27 0 l 264 0 m 291 0 l 0 -144 m -27 -144 l 264 -144 m 291 -144 l S',
+    'Q',
+  ].join('\n');
+  const clean = stripRegistrationColorStrokes(content, new Set(['/CS0']));
+  assert.match(clean, /24\.496 24\.496 269\.007 161\.007 re f/);
+  assert.doesNotMatch(clean, /-27 0 l/);
+
+  const source = await PDFDocument.create();
+  const mm = 72 / 25.4;
+  const page = source.addPage([318, 210]);
+  page.setTrimBox(33, 33, 252, 144);
+  page.setBleedBox(24.496, 24.496, 269.007, 161.007);
+  const tint = source.context.obj({ FunctionType: 2, Domain: [0, 1], C0: [1], C1: [0], N: 1 });
+  const registration = source.context.obj([
+    PDFName.of('Separation'), PDFName.of('All'), PDFName.of('DeviceGray'), tint,
+  ]);
+  const colorSpaces = source.context.obj({ CS0: registration });
+  page.node.Resources().set(PDFName.of('ColorSpace'), colorSpaces);
+  page.node.set(PDFName.of('Contents'), source.context.register(source.context.flateStream(content)));
+  const file = new Blob([await source.save()]);
+  const meta = { width: 252 / mm, height: 144 / mm, top: 3, bottom: 3, left: 3, right: 3 };
+  const settings = { ...defaults, duplex: false, rows: 1, cols: 1, marks: false, duploRegMark: false };
+  const output = await PDFDocument.load(await buildJobPdf({ file, meta, pageIndex: 0 }, null, settings));
+  const xObjects = output.getPage(0).node.Resources().lookup(PDFName.of('XObject'), PDFDict);
+  const embedded = output.context.lookup([...xObjects.entries()][0][1]);
+  const embeddedContent = new TextDecoder().decode(decodePDFRawStream(embedded).decode());
+  assert.match(embeddedContent, /269\.007 161\.007 re f/);
+  assert.doesNotMatch(embeddedContent, /-27 0 l/);
 });
 
 test('PDF output: paired order, page dimensions, separate sides and single-sided regression', async () => {

@@ -1,7 +1,7 @@
 {
   "name": "repeat-imposition",
   "private": true,
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Offline PDF step-and-repeat imposition for Duplo finishing workflows.",
   "author": "Nay Myo",
   "type": "module",
