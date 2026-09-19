@@ -2,12 +2,13 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AlertTriangle, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, CheckCircle2, ChevronLeft, ChevronRight, Download, FileUp, FolderOpen, GripHorizontal, Minus, Plus, RefreshCcw, RotateCw, Save, Settings2, Trash2, X, ZoomIn } from 'lucide-react';
 import { PDFDocument } from 'pdf-lib';
-import { buildJobPdf, buildPlacementPreviewPdf, planJob, calculateOuterBleed, classifyPlacement, inspectBarcode, extractOutputSide, finishedSize } from './pdf-engine.js';
+import { addProductionLabel, buildJobPdf, buildPlacementPreviewPdf, planJob, calculateOuterBleed, classifyPlacement, inspectBarcode, extractOutputSide, finishedSize } from './pdf-engine.js';
 import pdfJsWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
 import './styles.css';
 import './duplo.css';
 import { ArtworkDirection, ExportDialog, InspectorTabs, PatternPicker, SegmentedChoice } from './workspace-ui.jsx';
 import { SourceCard } from './workspace-ui.jsx';
+import { extractSalesOrder, formatProductionLabel, productionFileName } from './production-label.js';
 import './workspace-ui.css';
 
 const MM_PER_POINT = 25.4 / 72;
@@ -292,6 +293,10 @@ function App() {
   const [inspectorTab, setInspectorTab] = useState('artwork');
   const [editingSide, setEditingSide] = useState('front');
   const [exportOpen, setExportOpen] = useState(false);
+  const [productionMedia, setProductionMedia] = useState('');
+  const [productionLamination, setProductionLamination] = useState('none');
+  const [productionSheets, setProductionSheets] = useState(1);
+  const [productionLabelEnabled, setProductionLabelEnabled] = useState(true);
   const [barcodeOpen, setBarcodeOpen] = useState(false);
   const inspectorScroll = useRef(null);
   const [barcodeDirectoryHandle, setBarcodeDirectoryHandle] = useState(null);
@@ -370,6 +375,12 @@ function App() {
   const exportReady = Boolean(outputBytes && !processing && canExport);
   const barcodeNeedsAttention = Boolean(barcodeEnabled && (!barcodeName || !barcodeFile));
   const sheetLabel = paperPreset === '13x19' ? '13 × 19 in' : paperPreset === '12.4x18.4' ? '12.4 × 18.4 in' : paperPreset === '9x14' ? '9 × 14 in' : `${display(sheetW)} × ${display(sheetH)}`;
+  const salesOrder = useMemo(() => extractSalesOrder(sourceFile?.name), [sourceFile]);
+  const productionDetails = useMemo(() => ({
+    salesOrder, media: productionMedia, lamination: productionLamination, sheetQty: productionSheets,
+  }), [salesOrder, productionMedia, productionLamination, productionSheets]);
+  const productionLabel = useMemo(() => formatProductionLabel(productionDetails), [productionDetails]);
+  const exportFileName = useMemo(() => productionFileName(productionDetails), [productionDetails]);
   const backSize = backMeta ? finishedSize(backMeta, backRotation) : null;
   const selectedPlacementMap = selectedPlacementSide === 'back' ? mixedBackPlacements : mixedPlacements;
   const selectedPlacement = selectedCell === null ? null : selectedPlacementMap[selectedCell] || null;
@@ -702,6 +713,7 @@ function App() {
     setMarks(true); setDuploRegMark(true); setTrimBoxOutline(false); setTrimBoxStyle('corners'); setTrimBoxColor('#ff00ff'); setTrimBoxOutput('preview'); setBarcodeFile(null); setBarcodeName(''); setBarcodeEnabled(false);
     setMasterConfirmed(false); setFillMode('repeat'); setMixedPlacements({}); setMixedBackPlacements({}); setSelectedCell(null); setPlacementNotice(''); setPlacementUndo(null); setLayoutNotice('');
     setPresetName(''); setSelectedPresetId(''); setPresetsOpen(false); setBarcodeOpen(false);
+    setProductionMedia(''); setProductionLamination('none'); setProductionSheets(1); setProductionLabelEnabled(true);
     setEditingSide('front'); changeInspectorTab('artwork'); setExportOpen(false);
   };
   const requestNewJob = () => {
@@ -922,14 +934,15 @@ function App() {
     setBackFile(file); setBackSelectedPage(0); setMixedBackPlacements({}); setError('');
   };
   const downloadOutput = async () => {
-    if (!outputBytes || processing || !canExport) return;
+    if (!outputBytes || processing || !canExport || !productionMedia.trim()) return;
     try {
       const side = duplex ? exportSide : 'front';
-      const bytes = duplex && side !== 'both' ? await extractOutputSide(outputBytes, side === 'front' ? 0 : 1) : outputBytes;
+      const selectedBytes = duplex && side !== 'both' ? await extractOutputSide(outputBytes, side === 'front' ? 0 : 1) : outputBytes;
+      const bytes = productionLabelEnabled ? await addProductionLabel(selectedBytes, productionLabel) : selectedBytes;
       const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
       const link = document.createElement('a');
       link.href = url;
-      link.download = duplex ? `duplo-616-${side === 'both' ? 'front-back' : side}.pdf` : 'duplo-616-imposed.pdf';
+      link.download = exportFileName;
       link.click();
       setTimeout(() => URL.revokeObjectURL(url), 10000);
       setExportOpen(false);
@@ -1092,8 +1105,15 @@ function App() {
     </section></div>}
     {exportOpen && <ExportDialog duplex={duplex} side={exportSide} onSideChange={setExportSide} onClose={() => setExportOpen(false)}
       onDownload={downloadOutput} ready={exportReady} sheetLabel={sheetLabel} total={cols * rows} issue={issueText}
-      previewGuide={trimBoxOutline && trimBoxOutput === 'preview'}/>}
-  </main>;
+      previewGuide={trimBoxOutline && trimBoxOutput === 'preview'} production={{
+        salesOrder, media: productionMedia, lamination: productionLamination, sheetQty: productionSheets,
+        labelEnabled: productionLabelEnabled, label: productionLabel, fileName: exportFileName,
+      }} onProductionChange={(field, value) => {
+        if (field === 'media') setProductionMedia(value);
+        if (field === 'lamination') setProductionLamination(value);
+        if (field === 'sheetQty') setProductionSheets(Math.max(1, Math.floor(Number(value) || 1)));
+        if (field === 'labelEnabled') setProductionLabelEnabled(value);
+      }}/>}</main>;
 }
 
 createRoot(document.getElementById('root')).render(<App/>);

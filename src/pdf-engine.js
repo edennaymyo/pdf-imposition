@@ -1,6 +1,6 @@
 import {
   cmyk, decodePDFRawStream, degrees, PDFArray, PDFDict, PDFDocument,
-  PDFName, PDFRawStream, rgb,
+  PDFName, PDFRawStream, rgb, StandardFonts,
 } from 'pdf-lib';
 const MM_PER_POINT = 25.4 / 72;
 const POINTS_PER_MM = 72 / 25.4;
@@ -19,6 +19,8 @@ const BARCODE_HEIGHT_MM = 5;
 const BARCODE_KNOCKOUT_PADDING_MM = 0.5;
 const TRIMBOX_STROKE_POINTS = 0.25;
 const TRIMBOX_CORNER_LENGTH_MM = 2;
+const PRODUCTION_LABEL_INSET_MM = 3;
+const PRODUCTION_LABEL_FONT_SIZE = 6.5;
 
 const CONTENT_OPERATORS = new Set([
   'b', 'B', 'b*', 'B*', 'BDC', 'BI', 'BMC', 'BT', 'BX', 'c', 'cm', 'CS', 'cs',
@@ -592,5 +594,27 @@ export async function extractOutputSide(bytes, pageIndex) {
   const [page] = await result.copyPages(source, [pageIndex]);
   result.addPage(page);
   return result.save();
+}
+
+export async function addProductionLabel(bytes, label) {
+  const text = String(label || '').trim();
+  if (!text) return bytes;
+  const document = await PDFDocument.load(bytes, { updateMetadata: false });
+  const font = await document.embedFont(StandardFonts.Helvetica);
+  for (const page of document.getPages()) {
+    const maxWidth = page.getWidth() - PRODUCTION_LABEL_INSET_MM * POINTS_PER_MM * 2;
+    let fitted = text;
+    while (fitted.length > 1 && font.widthOfTextAtSize(fitted, PRODUCTION_LABEL_FONT_SIZE) > maxWidth) {
+      fitted = `${fitted.slice(0, -2).trimEnd()}…`;
+    }
+    page.drawText(fitted, {
+      x: PRODUCTION_LABEL_INSET_MM * POINTS_PER_MM,
+      y: page.getHeight() - PRODUCTION_LABEL_INSET_MM * POINTS_PER_MM - PRODUCTION_LABEL_FONT_SIZE,
+      size: PRODUCTION_LABEL_FONT_SIZE,
+      font,
+      color: cmyk(0, 0, 0, 0.78),
+    });
+  }
+  return document.save();
 }
 export { calculateOuterBleed, inspectBarcode, cellRotation, outputBleedAvailability };

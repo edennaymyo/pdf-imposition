@@ -82,7 +82,9 @@ export function PatternPicker({ value, onChange, duplex }) {
   </fieldset>;
 }
 
-export function ExportDialog({ duplex, side, onSideChange, onClose, onDownload, ready, sheetLabel, total, issue, previewGuide = false }) {
+const MEDIA_SUGGESTIONS = ['AC300g', 'AC250g', 'AC210g', 'C2S157g', 'C2S128g', 'Sticker PP'];
+
+export function ExportDialog({ duplex, side, onSideChange, onClose, onDownload, ready, sheetLabel, total, issue, previewGuide = false, production, onProductionChange }) {
   const ref = useRef(null);
   useEffect(() => {
     const dialog = ref.current;
@@ -95,9 +97,16 @@ export function ExportDialog({ duplex, side, onSideChange, onClose, onDownload, 
       <p className="section-intro">{previewGuide ? 'The TrimBox outline is a preview guide and will not be included in the PDF.' : 'The PDF uses the same output shown in your proof.'}</p>
       {duplex && <label className="select"><span>Include in export</span><select autoFocus aria-label="Export pages" value={side} onChange={event => onSideChange(event.target.value)}><option value="both">Front + Back · 2-page PDF</option><option value="front">Front only</option><option value="back">Back only</option></select></label>}
       <div className="export-recap"><span>Sheet<strong>{sheetLabel}</strong></span><span>Items<strong>{total} up{duplex ? ' / side' : ''}</strong></span><span>PDF order<strong>{!duplex || side === 'front' ? 'Front' : side === 'back' ? 'Back' : '1. Front → 2. Back'}</strong></span></div>
+      <section className="production-export"><div className="production-export-heading"><div><span className="eyebrow">PRODUCTION</span><h3>Print details</h3></div>{production.salesOrder && <span className="so-chip">{production.salesOrder}</span>}</div>
+        <label className="field"><span>Media specification</span><input autoFocus={!duplex} list="production-media" value={production.media} placeholder="e.g. AC300g" onChange={event => onProductionChange('media', event.target.value)}/><datalist id="production-media">{MEDIA_SUGGESTIONS.map(media => <option key={media} value={media}/>)}</datalist></label>
+        <div className="production-grid"><label className="select"><span>Lamination</span><select value={production.lamination} onChange={event => onProductionChange('lamination', event.target.value)}><option value="none">No lamination</option><option value="gloss">Gloss</option><option value="matte">Matte</option><option value="softTouch">Soft touch</option></select></label><label className="field"><span>Sheet quantity</span><input type="number" inputMode="numeric" min="1" max="99999" value={production.sheetQty} onChange={event => onProductionChange('sheetQty', event.target.value)}/></label></div>
+        <label className="toggle-row production-label-toggle"><span><b>Print label</b><small>Top-left · 3 mm inset</small></span><input type="checkbox" checked={production.labelEnabled} onChange={event => onProductionChange('labelEnabled', event.target.checked)}/></label>
+        <div className="production-preview"><span>PDF label</span><strong>{production.label}</strong><span>Download name</span><strong>{production.fileName}</strong></div>
+      </section>
       {duplex && <p className="hint">Print a test sheet at 100%. Use Long-edge duplex printing.</p>}
       {!ready && <p className="error" role="alert">{issue || 'Wait for the updated output proof.'}</p>}
-      <div className="dialog-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button type="button" className="primary-action" disabled={!ready} onClick={onDownload}><Download size={17}/> Download PDF</button></div>
+      {!production.media.trim() && <p className="error" role="alert">Choose or enter the print media specification.</p>}
+      <div className="dialog-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button type="button" className="primary-action" disabled={!ready || !production.media.trim()} onClick={onDownload}><Download size={17}/> Download PDF</button></div>
     </div>
   </dialog>;
 }

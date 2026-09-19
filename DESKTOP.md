@@ -2,7 +2,13 @@
 
 The desktop app wraps the offline Vite interface in Electron. Node.js integration stays disabled; context isolation and Chromium sandboxing stay enabled.
 
-## Version 0.3.1
+## Version 0.3.4
+
+- Export production details: media specification, lamination, and sheet quantity generate a safe download filename.
+- `S` order numbers such as `S07649` are detected from the front master filename when present.
+- Optional production label is printed at the top-left of every exported sheet, 3 mm inside the paper edge.
+
+## Version 0.3.3
 
 - Single-sided and Front/Back PDF preview and export, including mixed artwork per block.
 - Independent page selection and rotation with isolated block inspection previews.
